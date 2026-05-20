@@ -11,10 +11,12 @@ namespace Hi3Helper.Plugin.Arknights;
 internal partial class SelfUpdate : PluginSelfUpdateBase
 {
     private const string ExCdnFileSuffix = "Arknights/";
-    
-    // Use jsdelivr first to support the networks in the Chinese mainland
-    private const string ExCdn1Url = "https://fastly.jsdelivr.net/gh/misaka10843/CollapsePlugin-ReleaseRepo@main/" + ExCdnFileSuffix;
-    private const string ExCdn2Url = "https://github.com/misaka10843/CollapsePlugin-ReleaseRepo/raw/main/" + ExCdnFileSuffix;
+
+    private const string ExCdn1Url =
+        "https://cl-plugins.sakurakoi.top/" + ExCdnFileSuffix;
+
+    private const string ExCdn2Url =
+        "https://github.com/misaka10843/CollapsePlugin-ReleaseRepo/raw/main/" + ExCdnFileSuffix;
 
     protected readonly string[] BaseCdnUrl = [ExCdn1Url, ExCdn2Url];
     protected override ReadOnlySpan<string> BaseCdnUrlSpan => BaseCdnUrl;
