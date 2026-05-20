@@ -13,6 +13,9 @@
 
 **插件当前状态**: 当前基本功能均已实现，扩展功能需要等待官方支持和Collapse的更新
 
+您可以通过[Collapse Launcher官方](https://collapselauncher.com/plugin/catalog.html)
+或[本人插件网站(推荐)](https://cl-plugins.sakurakoi.top/)下载插件
+
 <img width="80%" alt="Plugin Preview" src="https://github.com/user-attachments/assets/f3f572c0-bfb7-4436-b8e7-47765f42c052" />
 
 </div>
@@ -25,19 +28,9 @@
 
 ---
 
-> [!WARNING]
-> **注意事项与已知局限**
->
-> 当前增量游戏更新为beta功能，可能会导致更新失败/报错/游戏文件损坏等问题，请在更新前备份游戏文件。
-> 
-> 由于 Collapse Launcher 暂无官方插件开发文档，本项目功能主要参考现有插件实现，**并可能存在以下局限性**：
->
-> 1. **预下载功能**：当前官方启动器还并未开启预下载功能，暂时无法获知对应的数据结构，因此无法支持。
-> 2. **手动完整性校验**：手动校验目前Collapse启动器似乎暂未提供相关 API 接口，需等待上游更新。
-
 > [!IMPORTANT]
 > 此插件并不是Collapse官方维护的，所以请不要前往Collapse的官方仓库提交issue和前往官方Discord提交issue
-> 
+>
 > 请优先在此仓库中提交issue，在其他的渠道提交issue将不会第一时间得到支持！
 >
 > 当前自更新有网络问题，请不要依靠自更新，而是重新下载对应最新版本插件，我正在编写解决方案，将在下个版本实施
