@@ -14,7 +14,7 @@ downloading, updating, and launching of games published by **Hypergryph**.
 **Plugin Status**: Currently, all basic features have been implemented. Extended features await official support and
 updates from Collapse.
 
-You can download the plugin via the [Official Collapse Launcher Website](https://collapselauncher.com/plugin/catalog.html) or [My Plugin Website (Recommended)](https://www.google.com/search?q=https://cl-plugins.sakurakoi.top/).
+You can download the plugin via the [Official Collapse Launcher Website](https://collapselauncher.com/plugin/catalog.html) or [My Plugin Website (Recommended)](https://cl-plugins.sakurakoi.top/).
 
 <img width="80%" alt="Plugin Preview" src="https://github.com/user-attachments/assets/f3f572c0-bfb7-4436-b8e7-47765f42c052" />
 
