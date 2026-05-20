@@ -1,7 +1,7 @@
 name: 功能请求/改进建议
 description: 为新功能或更改提议一个想法。
 title: "[请求]: "
-labels: ['Enhancement']
+labels: ['⚒️enhancement']
 assignees:
   - misaka10843
 body:

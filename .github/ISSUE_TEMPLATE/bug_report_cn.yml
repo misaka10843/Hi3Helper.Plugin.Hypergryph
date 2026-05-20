@@ -3,7 +3,7 @@ description: 创建报告以帮助我们修复用于 Collapse 的鹰角网络游
 assignees:
   - misaka10843
 title: "[Bug]: "
-labels: ['Needs Triaging']
+labels: ['🔍Needs Triaging']
 body:
   - type: markdown
     attributes:
