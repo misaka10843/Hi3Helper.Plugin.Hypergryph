@@ -365,16 +365,25 @@ public partial class HgGameInstaller
             var localPatchJsonPath = Path.Combine(tempExtractDir, "patch.json");
 
             // 检查增量包中是否有修补文件清单
-            if (File.Exists(localPatchJsonPath))
+            if (File.Exists(localPatchJsonPath) && new FileInfo(localPatchJsonPath).Length > 0)
             {
                 SharedStatic.InstanceLogger.LogInformation(
                     "[HgInstaller] Found local patch.json in sandbox. Reading manifest...");
-                await using var fs = File.OpenRead(localPatchJsonPath);
-                manifest = await JsonSerializer.DeserializeAsync(fs, HgApiContext.Default.HgPatchManifest,
-                    token);
+                try
+                {
+                    await using var fs = File.OpenRead(localPatchJsonPath);
+                    manifest = await JsonSerializer.DeserializeAsync(fs, HgApiContext.Default.HgPatchManifest,
+                        token);
+                }
+                catch (Exception ex)
+                {
+                    SharedStatic.InstanceLogger.LogWarning(
+                        $"[HgInstaller] Failed to parse local patch.json: {ex.Message}. Falling back to API if available.");
+                }
             }
+            
             // 检查API是否有修补文件清单
-            else if (!string.IsNullOrEmpty(patchJsonUrl))
+            if (manifest == null && !string.IsNullOrEmpty(patchJsonUrl))
             {
                 SharedStatic.InstanceLogger.LogInformation(
                     $"[HgInstaller] Fetching delta patch manifest from URL: {patchJsonUrl}");
@@ -386,10 +395,10 @@ public partial class HgGameInstaller
                     token);
             }
             // 如果两边都没有就直接跳过修补，代表仅覆盖即可
-            else
+            else if (manifest == null)
             {
                 SharedStatic.InstanceLogger.LogInformation(
-                    "[HgInstaller] No patch.json found and no URL provided. Assuming static-only delta update. Skipping VFS patching.");
+                    "[HgInstaller] No valid patch.json found and no URL provided. Assuming static-only delta update. Skipping VFS patching.");
                 return;
             }
 
@@ -451,30 +460,44 @@ public partial class HgGameInstaller
 
                     if (File.Exists(baseFilePath) && File.Exists(diffFilePath))
                     {
-                        var tempOutPath = targetFilePath + ".tmp";
-                        try
+                        if (new FileInfo(diffFilePath).Length == 0)
                         {
-                            var hdiffPatcher = new HDiffPatch();
-                            hdiffPatcher.Initialize(diffFilePath);
-
-                            Action<long> onPatchProgress = deltaBytes =>
+                            if (!string.Equals(baseFilePath, targetFilePath, StringComparison.OrdinalIgnoreCase))
                             {
-                                Interlocked.Add(ref currentPatchedSize, deltaBytes);
-                                progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
-                            };
-
-                            hdiffPatcher.Patch(baseFilePath, tempOutPath, true, onPatchProgress, token);
-
-                            ForceDeleteFile(targetFilePath); // 移动前先强删旧文件
-                            File.Move(tempOutPath, targetFilePath, true);
-                            SharedStatic.InstanceLogger.LogDebug($"[HgInstaller] [Patch] {fileNode.Name}");
+                                ForceDeleteFile(targetFilePath);
+                                File.Copy(baseFilePath, targetFilePath, true);
+                            }
+                            Interlocked.Add(ref currentPatchedSize, fileNode.Size);
+                            progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
+                            SharedStatic.InstanceLogger.LogDebug($"[HgInstaller] [Skip Empty Patch] {fileNode.Name}");
                         }
-                        catch (Exception ex)
+                        else
                         {
-                            SharedStatic.InstanceLogger.LogError(
-                                $"[HgInstaller] Delta patch failed for {fileNode.Name}. Error: {ex.Message}");
-                            if (File.Exists(tempOutPath)) ForceDeleteFile(tempOutPath);
-                            throw;
+                            var tempOutPath = targetFilePath + ".tmp";
+                            try
+                            {
+                                var hdiffPatcher = new HDiffPatch();
+                                hdiffPatcher.Initialize(diffFilePath);
+
+                                Action<long> onPatchProgress = deltaBytes =>
+                                {
+                                    Interlocked.Add(ref currentPatchedSize, deltaBytes);
+                                    progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
+                                };
+
+                                hdiffPatcher.Patch(baseFilePath, tempOutPath, true, onPatchProgress, token);
+
+                                ForceDeleteFile(targetFilePath); // 移动前先强删旧文件
+                                File.Move(tempOutPath, targetFilePath, true);
+                                SharedStatic.InstanceLogger.LogDebug($"[HgInstaller] [Patch] {fileNode.Name}");
+                            }
+                            catch (Exception ex)
+                            {
+                                SharedStatic.InstanceLogger.LogError(
+                                    $"[HgInstaller] Delta patch failed for {fileNode.Name}. Error: {ex.Message}");
+                                if (File.Exists(tempOutPath)) ForceDeleteFile(tempOutPath);
+                                throw;
+                            }
                         }
                     }
                 }
