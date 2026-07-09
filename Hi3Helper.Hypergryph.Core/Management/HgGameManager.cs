@@ -49,22 +49,34 @@ public partial class HgGameManager : GameManagerBase
                                    && _latestGameInfo.Patch.Patches.Count > 0;
 
     internal string? PatchManifestUrl => _latestGameInfo?.Patch?.V2PatchInfoUrl;
-    internal string? TargetVersion => _latestGameInfo?.Version;
+    internal string? TargetVersion => _latestGameInfo?.PrePatch?.Version ?? _latestGameInfo?.Version;
 
-    internal List<HgPack>? GamePacks
+    internal List<HgPack>? GamePacks => GetGamePacks(GameInstallerKind.Update);
+
+    internal List<HgPack>? GetGamePacks(GameInstallerKind kind)
     {
-        get
+        if (kind == GameInstallerKind.Preload)
         {
-            if (IsDeltaUpdate)
+            if (_latestGameInfo?.PrePatch?.Patches is { Count: > 0 } prePatches)
             {
                 SharedStatic.InstanceLogger.LogInformation(
-                    "[HgCore] Delta update detected, exposing Patch packs.");
-                return _latestGameInfo!.Patch!.Patches;
+                    $"[HgCore] Preload detected, exposing PrePatch packs. Target version: {_latestGameInfo.PrePatch.Version}");
+                return prePatches;
             }
 
-            SharedStatic.InstanceLogger.LogInformation("[HgCore] Full package detected.");
-            return _latestGameInfo?.Pkg?.Packs;
+            SharedStatic.InstanceLogger.LogInformation("[HgCore] No preload package detected.");
+            return null;
         }
+
+        if (IsDeltaUpdate)
+        {
+            SharedStatic.InstanceLogger.LogInformation(
+                "[HgCore] Delta update detected, exposing Patch packs.");
+            return _latestGameInfo!.Patch!.Patches;
+        }
+
+        SharedStatic.InstanceLogger.LogInformation("[HgCore] Full package detected.");
+        return _latestGameInfo?.Pkg?.Packs;
     }
 
     private string CurrentGameExecutableByPreset { get; }
@@ -95,7 +107,9 @@ public partial class HgGameManager : GameManagerBase
         }
     }
 
-    protected override bool HasPreload => false;
+    protected override bool HasPreload => IsInstalled
+                                          && _latestGameInfo?.PrePatch?.Patches is { Count: > 0 };
+
     protected override GameVersion ApiGameVersion { get; set; }
 
     protected override void SetGamePathInner(string gamePath)
@@ -194,7 +208,7 @@ public partial class HgGameManager : GameManagerBase
             }
 
             SharedStatic.InstanceLogger.LogInformation(
-                $"[HgCore] API Response - Action: {_latestGameInfo.Action}, Version: {_latestGameInfo.Version}");
+                $"[HgCore] API Response - Action: {_latestGameInfo.Action}, Version: {_latestGameInfo.Version}, PreloadVersion: {_latestGameInfo.PrePatch?.Version}");
 
             if (!string.IsNullOrEmpty(_latestGameInfo.Version))
                 ApiGameVersion = new GameVersion(_latestGameInfo.Version);

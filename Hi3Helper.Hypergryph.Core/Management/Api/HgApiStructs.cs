@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
 namespace Hi3Helper.Hypergryph.Core.Management.Api;
@@ -91,9 +91,10 @@ public class HgGetLatestGameRsp
     [JsonPropertyName("version")] public string? Version { get; set; }
     [JsonPropertyName("pkg")] public HgPkgInfo? Pkg { get; set; }
     [JsonPropertyName("patch")] public HgPatchInfo? Patch { get; set; }
+    [JsonPropertyName("pre_patch")] public HgPatchInfo? PrePatch { get; set; }
 }
 
-// --- 增量更新 ---
+// --- 增量更新 / 预下载 ---
 public class HgPatchInfo
 {
     [JsonPropertyName("url")] public string? Url { get; set; }
@@ -101,6 +102,7 @@ public class HgPatchInfo
     [JsonPropertyName("package_size")] public string? PackageSize { get; set; }
     [JsonPropertyName("total_size")] public string? TotalSize { get; set; }
     [JsonPropertyName("patches")] public List<HgPack>? Patches { get; set; }
+    [JsonPropertyName("version")] public string? Version { get; set; }
 
     [JsonPropertyName("v2_patch_info_url")]
     public string? V2PatchInfoUrl { get; set; }
