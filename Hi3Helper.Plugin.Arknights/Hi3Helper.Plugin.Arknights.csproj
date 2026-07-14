@@ -18,7 +18,7 @@
         <Company>Misaka10843</Company>
         <Authors>$(Company).</Authors>
         <Copyright>Copyright 2026 $(Company)</Copyright>
-        <Version>1.0.4</Version>
+        <Version>1.0.5</Version>
         <ApplicationIcon>icon.ico</ApplicationIcon>
         <Configurations>Debug;Release</Configurations>
     </PropertyGroup>
