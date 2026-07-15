@@ -106,4 +106,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.plugin }}-DebugNoReflectionPublish
-          path: ${{ matrix.plugin }}/bin/Debug/net10.0/publish/
+          path: |
+            ${{ matrix.plugin }}/bin/**/publish/**
