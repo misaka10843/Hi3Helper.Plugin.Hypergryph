@@ -125,6 +125,8 @@ public partial class HgGameInstaller : GameInstallerBase
     {
         await InitAsync(token).ConfigureAwait(false);
 
+        var lastReportTime = DateTime.UtcNow;
+
         if (GameManager is not HgGameManager manager)
             throw new InvalidOperationException("GameManager is not HgGameManager");
 
@@ -217,10 +219,15 @@ public partial class HgGameInstaller : GameInstallerBase
             }).ConfigureAwait(false);
 
         var downloadTasks = packsToDownload.ToList();
-        progress.TotalCountToDownload = downloadTasks.Count;
-        progress.DownloadedCount = 0;
+
+        progress.TotalCountToDownload = packs.Count;
+        progress.DownloadedCount = packs.Count - downloadTasks.Count;
+
         progress.TotalBytesToDownload = totalBytesToDownload;
         progress.DownloadedBytes = alreadyDownloadedBytes;
+
+        progress.TotalStateToComplete = packs.Count;
+        progress.StateCount = packs.Count - downloadTasks.Count;
         progress.TotalStateToComplete = downloadTasks.Count;
         progress.StateCount = 0;
 
@@ -241,9 +248,18 @@ public partial class HgGameInstaller : GameInstallerBase
 
                     await DownloadFileAsync(pack.Url!, tempPath, expectedSize, innerToken, delta =>
                     {
-                        Interlocked.Add(ref progress.DownloadedBytes, delta);
-                        Report(InstallProgressState.Download);
-                    }).ConfigureAwait(false);
+                        Interlocked.Add(
+                            ref progress.DownloadedBytes,
+                            delta);
+
+                        var now = DateTime.UtcNow;
+
+                        if ((now - lastReportTime).TotalMilliseconds >= 500)
+                        {
+                            lastReportTime = now;
+                            Report(InstallProgressState.Download);
+                        }
+                    });
 
                     if (!string.IsNullOrEmpty(pack.Md5))
                     {
@@ -265,6 +281,15 @@ public partial class HgGameInstaller : GameInstallerBase
         }
 
         SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Preload completed.");
+        progress.DownloadedBytes =
+            progress.TotalBytesToDownload;
+
+        progress.DownloadedCount =
+            progress.TotalCountToDownload;
+
+        progress.StateCount =
+            progress.TotalStateToComplete;
+
         Report(InstallProgressState.Completed);
     }
 

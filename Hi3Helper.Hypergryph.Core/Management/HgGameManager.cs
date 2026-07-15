@@ -103,15 +103,14 @@ public partial class HgGameManager : GameManagerBase
         {
             if (!IsInstalled) return false;
 
-            var isVersionDifferent = !ApiGameVersion.Equals(CurrentGameVersion);
-            return isVersionDifferent || _latestGameInfo?.Action == 1;
+            return CurrentGameVersion != ApiGameVersion;
         }
     }
 
-    protected override bool HasPreload => IsInstalled
-                                          && _latestGameInfo?.PrePatch?.Patches is { Count: > 0 };
+    protected override bool HasPreload => IsInstalled && ApiPreloadGameVersion != GameVersion.Empty;
 
     protected override GameVersion ApiGameVersion { get; set; }
+    protected override GameVersion ApiPreloadGameVersion { get; set; }
 
     protected override void SetGamePathInner(string gamePath)
     {
@@ -213,6 +212,16 @@ public partial class HgGameManager : GameManagerBase
 
             if (!string.IsNullOrEmpty(_latestGameInfo.Version))
                 ApiGameVersion = new GameVersion(_latestGameInfo.Version);
+
+            if (!string.IsNullOrEmpty(_latestGameInfo.PrePatch?.Version))
+            {
+                ApiPreloadGameVersion =
+                    new GameVersion(_latestGameInfo.PrePatch.Version);
+            }
+            else
+            {
+                ApiPreloadGameVersion = GameVersion.Empty;
+            }
 
             if (_latestGameInfo.Pkg != null) GameResourceBaseUrl = _latestGameInfo.Pkg.FilePath;
 
