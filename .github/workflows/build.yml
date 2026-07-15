@@ -89,13 +89,17 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Restore and Build ${{ matrix.plugin }}
+      - name: Restore and Publish ${{ matrix.plugin }}
         run: |
           dotnet restore ${{ matrix.plugin }}/${{ matrix.plugin }}.csproj
-          dotnet build ${{ matrix.plugin }}/${{ matrix.plugin }}.csproj -c Release --no-restore
+
+          dotnet publish ${{ matrix.plugin }}/${{ matrix.plugin }}.csproj `
+            -c Debug `
+            -p:PublishProfile=DebugNoReflectionPublish `
+            --no-restore
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.plugin }}-Release
-          path: ${{ matrix.plugin }}/bin/Release/net10.0/
+          name: ${{ matrix.plugin }}-DebugNoReflectionPublish
+          path: ${{ matrix.plugin }}/bin/Debug/net10.0/publish/
