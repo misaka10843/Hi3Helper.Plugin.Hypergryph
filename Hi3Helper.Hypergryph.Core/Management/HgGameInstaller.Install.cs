@@ -682,8 +682,13 @@ public partial class HgGameInstaller
                 }
                 catch (Exception ex)
                 {
-                    SharedStatic.InstanceLogger.LogError($"[HgInstaller] Decompression failed: {ex}");
-                    throw;
+                    var message = string.IsNullOrEmpty(password)
+                        ? "[HgInstaller] Decompression failed. The archive may be corrupted, or this update package may be encrypted but patch.cd_key was not returned by API."
+                        : "[HgInstaller] Decompression failed. The archive may be corrupted, patch.cd_key may be wrong, or the cached preload package may not match the official update package.";
+
+                    SharedStatic.InstanceLogger.LogError($"{message}\n{ex}");
+
+                    throw new InvalidDataException(message, ex);
                 }
             }, token);
         }
