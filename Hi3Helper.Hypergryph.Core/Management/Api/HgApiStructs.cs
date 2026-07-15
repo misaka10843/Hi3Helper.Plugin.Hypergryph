@@ -102,6 +102,7 @@ public class HgPatchInfo
     [JsonPropertyName("package_size")] public string? PackageSize { get; set; }
     [JsonPropertyName("total_size")] public string? TotalSize { get; set; }
     [JsonPropertyName("patches")] public List<HgPack>? Patches { get; set; }
+    [JsonPropertyName("cd_key")] public string? CdKey { get; set; }
     [JsonPropertyName("version")] public string? Version { get; set; }
 
     [JsonPropertyName("v2_patch_info_url")]

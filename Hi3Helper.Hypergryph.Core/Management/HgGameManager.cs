@@ -49,6 +49,7 @@ public partial class HgGameManager : GameManagerBase
                                    && _latestGameInfo.Patch.Patches.Count > 0;
 
     internal string? PatchManifestUrl => _latestGameInfo?.Patch?.V2PatchInfoUrl;
+    internal string? PatchCdKey => _latestGameInfo?.Patch?.CdKey;
     internal string? TargetVersion => _latestGameInfo?.PrePatch?.Version ?? _latestGameInfo?.Version;
 
     internal List<HgPack>? GamePacks => GetGamePacks(GameInstallerKind.Update);

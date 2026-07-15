@@ -225,12 +225,17 @@ public partial class HgGameInstaller
                     if (Directory.Exists(tempExtractDir)) Directory.Delete(tempExtractDir, true);
                     Directory.CreateDirectory(tempExtractDir);
 
-                    await ExtractPackagesAsync(downloadDir, tempExtractDir, token, (extractedBytes, totalBytes) =>
-                    {
-                        progress.DownloadedBytes = extractedBytes;
-                        progress.TotalBytesToDownload = totalBytes;
-                        Report(InstallProgressState.Updating);
-                    });
+                    await ExtractPackagesAsync(
+                        downloadDir,
+                        tempExtractDir,
+                        manager.PatchCdKey,
+                        token,
+                        (extractedBytes, totalBytes) =>
+                        {
+                            progress.DownloadedBytes = extractedBytes;
+                            progress.TotalBytesToDownload = totalBytes;
+                            Report(InstallProgressState.Updating);
+                        });
                 }
 
                 Report(InstallProgressState.Removing);
@@ -306,12 +311,17 @@ public partial class HgGameInstaller
             {
                 Report(InstallProgressState.Install);
                 SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Full update mechanism confirmed.");
-                await ExtractPackagesAsync(downloadDir, installPath, token, (extractedBytes, totalBytes) =>
-                {
-                    progress.DownloadedBytes = extractedBytes;
-                    progress.TotalBytesToDownload = totalBytes;
-                    Report(InstallProgressState.Install);
-                });
+                await ExtractPackagesAsync(
+                    downloadDir,
+                    installPath,
+                    null,
+                    token,
+                    (extractedBytes, totalBytes) =>
+                    {
+                        progress.DownloadedBytes = extractedBytes;
+                        progress.TotalBytesToDownload = totalBytes;
+                        Report(InstallProgressState.Install);
+                    });
             }
 
             try
@@ -381,7 +391,7 @@ public partial class HgGameInstaller
                         $"[HgInstaller] Failed to parse local patch.json: {ex.Message}. Falling back to API if available.");
                 }
             }
-            
+
             // 检查API是否有修补文件清单
             if (manifest == null && !string.IsNullOrEmpty(patchJsonUrl))
             {
@@ -467,6 +477,7 @@ public partial class HgGameInstaller
                                 ForceDeleteFile(targetFilePath);
                                 File.Copy(baseFilePath, targetFilePath, true);
                             }
+
                             Interlocked.Add(ref currentPatchedSize, fileNode.Size);
                             progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
                             SharedStatic.InstanceLogger.LogDebug($"[HgInstaller] [Skip Empty Patch] {fileNode.Name}");
@@ -606,7 +617,11 @@ public partial class HgGameInstaller
                 .Equals(expectedMd5, StringComparison.OrdinalIgnoreCase);
         }
 
-        private async Task ExtractPackagesAsync(string sourceDir, string destDir, CancellationToken token,
+        private async Task ExtractPackagesAsync(
+            string sourceDir,
+            string destDir,
+            string? password,
+            CancellationToken token,
             Action<long, long>? progressCallback)
         {
             SharedStatic.InstanceLogger.LogInformation(
@@ -634,6 +649,10 @@ public partial class HgGameInstaller
                 {
                     using var multiStream = new MultiVolumeStream(partFiles);
                     using var archiveFile = new ArchiveFile(multiStream);
+                    if (!string.IsNullOrEmpty(password))
+                    {
+                        archiveFile.SetArchivePassword(password);
+                    }
 
                     var totalSize = archiveFile.Entries.Sum(x => (long)x.Size);
                     long currentRead = 0;
