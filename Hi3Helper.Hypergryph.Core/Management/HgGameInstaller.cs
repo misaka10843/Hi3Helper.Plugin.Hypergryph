@@ -125,8 +125,6 @@ public partial class HgGameInstaller : GameInstallerBase
     {
         await InitAsync(token).ConfigureAwait(false);
 
-        var lastReportTime = DateTime.UtcNow;
-
         if (GameManager is not HgGameManager manager)
             throw new InvalidOperationException("GameManager is not HgGameManager");
 
@@ -142,6 +140,8 @@ public partial class HgGameInstaller : GameInstallerBase
         Directory.CreateDirectory(downloadDir);
 
         InstallProgress progress = default;
+
+        long lastReportTicks = DateTime.UtcNow.Ticks;
 
         void Report(InstallProgressState state)
         {
@@ -192,6 +192,7 @@ public partial class HgGameInstaller : GameInstallerBase
                         if (isMatch)
                         {
                             Interlocked.Add(ref alreadyDownloadedBytes, size);
+                            Interlocked.Add(ref progress.DownloadedBytes, size);
                             needsDownload = false;
                         }
                         else
@@ -208,9 +209,15 @@ public partial class HgGameInstaller : GameInstallerBase
                 if (needsDownload)
                 {
                     if (File.Exists(tempPath) && new FileInfo(tempPath).Length > size)
+                    {
                         ForceDeleteFile(tempPath);
+                    }
 
                     packsToDownload.Add(pack);
+                }
+                else
+                {
+                    Interlocked.Add(ref progress.DownloadedBytes, size);
                 }
 
                 Interlocked.Increment(ref progress.DownloadedCount);
@@ -228,8 +235,6 @@ public partial class HgGameInstaller : GameInstallerBase
 
         progress.TotalStateToComplete = packs.Count;
         progress.StateCount = packs.Count - downloadTasks.Count;
-        progress.TotalStateToComplete = downloadTasks.Count;
-        progress.StateCount = 0;
 
         if (downloadTasks.Count > 0)
         {
@@ -252,12 +257,17 @@ public partial class HgGameInstaller : GameInstallerBase
                             ref progress.DownloadedBytes,
                             delta);
 
-                        var now = DateTime.UtcNow;
+                        var nowTicks = DateTime.UtcNow.Ticks;
 
-                        if ((now - lastReportTime).TotalMilliseconds >= 500)
+                        if (nowTicks - Interlocked.Read(ref lastReportTicks)
+                            >= TimeSpan.TicksPerMillisecond * 500)
                         {
-                            lastReportTime = now;
-                            Report(InstallProgressState.Download);
+                            Interlocked.Exchange(
+                                ref lastReportTicks,
+                                nowTicks);
+
+                            Report(
+                                InstallProgressState.Download);
                         }
                     });
 
