@@ -431,89 +431,192 @@ public partial class HgGameInstaller
                 foreach (var file in allExtractedFiles) extractFileMap[Path.GetFileName(file)] = file;
             }, token);
 
+            var processedCount = 0;
+            var skippedNodes = new List<string>();
+
             SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Starting VFS delta patch pipeline...");
 
             foreach (var fileNode in manifest.Files)
             {
                 token.ThrowIfCancellationRequested();
 
-                var targetFilePath = Path.Combine(vfsBasePath, fileNode.Name!.Replace("/", "\\"));
+                if (string.IsNullOrEmpty(fileNode.Name))
+                {
+                    skippedNodes.Add("<empty name>");
+                    continue;
+                }
+
+                var handled = false;
+
+                var targetFilePath = Path.Combine(
+                    vfsBasePath,
+                    fileNode.Name.Replace("/", "\\"));
+
                 var targetDir = Path.GetDirectoryName(targetFilePath)!;
-                if (!Directory.Exists(targetDir)) Directory.CreateDirectory(targetDir);
+                if (!Directory.Exists(targetDir))
+                    Directory.CreateDirectory(targetDir);
 
                 if (!string.IsNullOrEmpty(fileNode.LocalPath))
                 {
-                    var sourceExtractedFile = Path.Combine(tempExtractDir, fileNode.LocalPath.Replace("/", "\\"));
+                    var sourceExtractedFile = Path.Combine(
+                        tempExtractDir,
+                        fileNode.LocalPath.Replace("/", "\\"));
 
                     if (!File.Exists(sourceExtractedFile) &&
-                        extractFileMap.TryGetValue(Path.GetFileName(fileNode.LocalPath), out var foundPath))
-                        sourceExtractedFile = foundPath;
-
-                    if (File.Exists(sourceExtractedFile))
+                        extractFileMap.TryGetValue(
+                            Path.GetFileName(fileNode.LocalPath),
+                            out var foundPath))
                     {
-                        ForceDeleteFile(targetFilePath); // 拷贝前先强删目的文件
-                        File.Copy(sourceExtractedFile, targetFilePath, true);
-                        Interlocked.Add(ref currentPatchedSize, fileNode.Size);
-                        progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
-                        SharedStatic.InstanceLogger.LogDebug($"[HgInstaller] [Copy] {fileNode.Name}");
+                        sourceExtractedFile = foundPath;
                     }
+
+                    if (!File.Exists(sourceExtractedFile))
+                    {
+                        skippedNodes.Add(
+                            $"{fileNode.Name} | local_path missing: {fileNode.LocalPath}");
+                        continue;
+                    }
+
+                    ForceDeleteFile(targetFilePath);
+                    File.Copy(sourceExtractedFile, targetFilePath, true);
+
+                    Interlocked.Add(ref currentPatchedSize, fileNode.Size);
+                    progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
+
+                    SharedStatic.InstanceLogger.LogDebug(
+                        $"[HgInstaller] [Copy] {fileNode.Name}");
+
+                    handled = true;
                 }
                 else if (fileNode.Patches != null && fileNode.Patches.Count > 0)
                 {
                     var patchInfo = fileNode.Patches[0];
-                    var baseFilePath = Path.Combine(vfsBasePath, patchInfo.BaseFile!.Replace("/", "\\"));
-                    var diffFilePath = Path.Combine(tempExtractDir, patchInfo.PatchPath!.Replace("/", "\\"));
 
-                    if (!File.Exists(diffFilePath) && extractFileMap.TryGetValue(Path.GetFileName(patchInfo.PatchPath!),
-                            out var foundDiffPath))
-                        diffFilePath = foundDiffPath;
-
-                    if (File.Exists(baseFilePath) && File.Exists(diffFilePath))
+                    if (string.IsNullOrEmpty(patchInfo.BaseFile) ||
+                        string.IsNullOrEmpty(patchInfo.PatchPath))
                     {
-                        if (new FileInfo(diffFilePath).Length == 0)
-                        {
-                            if (!string.Equals(baseFilePath, targetFilePath, StringComparison.OrdinalIgnoreCase))
-                            {
-                                ForceDeleteFile(targetFilePath);
-                                File.Copy(baseFilePath, targetFilePath, true);
-                            }
+                        skippedNodes.Add(
+                            $"{fileNode.Name} | invalid patch node");
+                        continue;
+                    }
 
-                            Interlocked.Add(ref currentPatchedSize, fileNode.Size);
-                            progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
-                            SharedStatic.InstanceLogger.LogDebug($"[HgInstaller] [Skip Empty Patch] {fileNode.Name}");
+                    var baseFilePath = Path.Combine(
+                        vfsBasePath,
+                        patchInfo.BaseFile.Replace("/", "\\"));
+
+                    var diffFilePath = Path.Combine(
+                        tempExtractDir,
+                        patchInfo.PatchPath.Replace("/", "\\"));
+
+                    if (!File.Exists(diffFilePath) &&
+                        extractFileMap.TryGetValue(
+                            Path.GetFileName(patchInfo.PatchPath),
+                            out var foundDiffPath))
+                    {
+                        diffFilePath = foundDiffPath;
+                    }
+
+                    if (!File.Exists(baseFilePath))
+                    {
+                        skippedNodes.Add(
+                            $"{fileNode.Name} | base file missing: {patchInfo.BaseFile}");
+                        continue;
+                    }
+
+                    if (!File.Exists(diffFilePath))
+                    {
+                        skippedNodes.Add(
+                            $"{fileNode.Name} | diff file missing: {patchInfo.PatchPath}");
+                        continue;
+                    }
+
+                    if (new FileInfo(diffFilePath).Length == 0)
+                    {
+                        if (!string.Equals(
+                                baseFilePath,
+                                targetFilePath,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            ForceDeleteFile(targetFilePath);
+                            File.Copy(baseFilePath, targetFilePath, true);
                         }
-                        else
+
+                        Interlocked.Add(ref currentPatchedSize, fileNode.Size);
+                        progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
+
+                        SharedStatic.InstanceLogger.LogDebug(
+                            $"[HgInstaller] [Skip Empty Patch] {fileNode.Name}");
+
+                        handled = true;
+                    }
+                    else
+                    {
+                        var tempOutPath = targetFilePath + ".tmp";
+
+                        try
                         {
-                            var tempOutPath = targetFilePath + ".tmp";
-                            try
+                            var hdiffPatcher = new HDiffPatch();
+                            hdiffPatcher.Initialize(diffFilePath);
+
+                            Action<long> onPatchProgress = deltaBytes =>
                             {
-                                var hdiffPatcher = new HDiffPatch();
-                                hdiffPatcher.Initialize(diffFilePath);
+                                Interlocked.Add(ref currentPatchedSize, deltaBytes);
+                                progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
+                            };
 
-                                Action<long> onPatchProgress = deltaBytes =>
-                                {
-                                    Interlocked.Add(ref currentPatchedSize, deltaBytes);
-                                    progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
-                                };
+                            hdiffPatcher.Patch(
+                                baseFilePath,
+                                tempOutPath,
+                                true,
+                                onPatchProgress,
+                                token);
 
-                                hdiffPatcher.Patch(baseFilePath, tempOutPath, true, onPatchProgress, token);
+                            ForceDeleteFile(targetFilePath);
+                            File.Move(tempOutPath, targetFilePath, true);
 
-                                ForceDeleteFile(targetFilePath); // 移动前先强删旧文件
-                                File.Move(tempOutPath, targetFilePath, true);
-                                SharedStatic.InstanceLogger.LogDebug($"[HgInstaller] [Patch] {fileNode.Name}");
-                            }
-                            catch (Exception ex)
-                            {
-                                SharedStatic.InstanceLogger.LogError(
-                                    $"[HgInstaller] Delta patch failed for {fileNode.Name}. Error: {ex.Message}");
-                                if (File.Exists(tempOutPath)) ForceDeleteFile(tempOutPath);
-                                throw;
-                            }
+                            SharedStatic.InstanceLogger.LogDebug(
+                                $"[HgInstaller] [Patch] {fileNode.Name}");
+
+                            handled = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            SharedStatic.InstanceLogger.LogError(
+                                $"[HgInstaller] Delta patch failed for {fileNode.Name}. Error: {ex.Message}");
+
+                            if (File.Exists(tempOutPath))
+                                ForceDeleteFile(tempOutPath);
+
+                            throw;
                         }
                     }
                 }
+                else
+                {
+                    skippedNodes.Add(
+                        $"{fileNode.Name} | no local_path and no patch");
+                }
+
+                if (handled)
+                    processedCount++;
             }
 
+            if (skippedNodes.Count > 0)
+            {
+                var preview = string.Join(
+                    Environment.NewLine,
+                    skippedNodes.Take(20));
+
+                SharedStatic.InstanceLogger.LogError(
+                    $"[HgInstaller] Delta patch skipped {skippedNodes.Count} files. First entries:{Environment.NewLine}{preview}");
+
+                throw new InvalidDataException(
+                    $"[HgInstaller] Delta patch incomplete. {skippedNodes.Count} files were skipped. " +
+                    "The cached preload package may not match the official patch, or patch.json path mapping is not supported correctly.");
+            }
+
+            SharedStatic.InstanceLogger.LogInformation(
+                $"[HgInstaller] VFS delta patch pipeline executed successfully. Processed {processedCount}/{manifest.Files.Count} files.");
             SharedStatic.InstanceLogger.LogInformation(
                 "[HgInstaller] VFS delta patch pipeline executed successfully.");
         }
