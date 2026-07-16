@@ -12,10 +12,10 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Hi3Helper.Plugin.Core;
-using Hi3Helper.Plugin.Core.Management;
 using Hi3Helper.Hypergryph.Core.Management.Api;
 using Hi3Helper.Hypergryph.Core.Utils;
+using Hi3Helper.Plugin.Core;
+using Hi3Helper.Plugin.Core.Management;
 using Microsoft.Extensions.Logging;
 using SevenZipExtractor;
 using SevenZipExtractor.Event;
@@ -71,6 +71,43 @@ public partial class HgGameInstaller
             {
                 progressDelegate?.Invoke(in progress);
                 progressStateDelegate?.Invoke(state);
+            }
+
+            void ResetSingleStageProgress()
+            {
+                progress.TotalCountToDownload = 1;
+                progress.DownloadedCount = 0;
+
+                progress.TotalStateToComplete = 1;
+                progress.StateCount = 0;
+
+                progress.TotalBytesToDownload = 0;
+                progress.DownloadedBytes = 0;
+            }
+
+            void CompleteSingleStageProgress()
+            {
+                progress.DownloadedCount = progress.TotalCountToDownload;
+                progress.StateCount = progress.TotalStateToComplete;
+
+                if (progress.TotalBytesToDownload > 0)
+                    progress.DownloadedBytes = progress.TotalBytesToDownload;
+            }
+
+            var lastDownloadReportTicks = DateTime.UtcNow.Ticks;
+            var reportIntervalTicks = TimeSpan.FromMilliseconds(300).Ticks;
+
+            void ReportDownloadThrottled(InstallProgressState state)
+            {
+                var nowTicks = DateTime.UtcNow.Ticks;
+                var oldTicks = Interlocked.Read(ref lastDownloadReportTicks);
+
+                if (nowTicks - oldTicks >= reportIntervalTicks &&
+                    Interlocked.CompareExchange(
+                        ref lastDownloadReportTicks,
+                        nowTicks,
+                        oldTicks) == oldTicks)
+                    Report(state);
             }
 
             Report(InstallProgressState.Preparing);
@@ -152,12 +189,12 @@ public partial class HgGameInstaller
                 });
 
             var downloadTasks = packsToDownload.ToList();
-            progress.TotalCountToDownload = downloadTasks.Count;
-            progress.DownloadedCount = 0;
+            progress.TotalCountToDownload = manager.GamePacks.Count;
+            progress.DownloadedCount = manager.GamePacks.Count - downloadTasks.Count;
             progress.TotalBytesToDownload = totalBytesToDownload;
             progress.DownloadedBytes = alreadyDownloadedBytes;
-            progress.TotalStateToComplete = downloadTasks.Count;
-            progress.StateCount = 0;
+            progress.TotalStateToComplete = manager.GamePacks.Count;
+            progress.StateCount = manager.GamePacks.Count - downloadTasks.Count;
 
             //断点续传下载
             if (downloadTasks.Count > 0)
@@ -180,7 +217,7 @@ public partial class HgGameInstaller
                     await DownloadFileAsync(pack.Url!, tempPath, expectedSize, innerToken, delta =>
                     {
                         Interlocked.Add(ref progress.DownloadedBytes, delta);
-                        Report(InstallProgressState.Download);
+                        ReportDownloadThrottled(InstallProgressState.Download);
                     }).ConfigureAwait(false);
 
                     if (!string.IsNullOrEmpty(pack.Md5))
@@ -221,6 +258,7 @@ public partial class HgGameInstaller
 
                 if (!skipExtractForDebug)
                 {
+                    ResetSingleStageProgress();
                     Report(InstallProgressState.Updating);
                     if (Directory.Exists(tempExtractDir)) Directory.Delete(tempExtractDir, true);
                     Directory.CreateDirectory(tempExtractDir);
@@ -236,8 +274,83 @@ public partial class HgGameInstaller
                             progress.TotalBytesToDownload = totalBytes;
                             Report(InstallProgressState.Updating);
                         });
+
+                    CompleteSingleStageProgress();
+                    Report(InstallProgressState.Updating);
                 }
 
+                Report(InstallProgressState.Updating);
+                SharedStatic.InstanceLogger.LogInformation(
+                    "[HgInstaller] Copying static update files...");
+
+                var staticFiles = Directory.GetFiles(tempExtractDir, "*.*", SearchOption.AllDirectories)
+                    .Where(newPath =>
+                    {
+                        var relPath = Path.GetRelativePath(tempExtractDir, newPath);
+
+                        return !relPath.StartsWith("vfs_files", StringComparison.OrdinalIgnoreCase) &&
+                               !relPath.StartsWith("diff_", StringComparison.OrdinalIgnoreCase) &&
+                               !relPath.Equals("patch.json", StringComparison.OrdinalIgnoreCase) &&
+                               !relPath.Equals("delete_files.txt", StringComparison.OrdinalIgnoreCase);
+                    })
+                    .ToList();
+
+                progress.TotalCountToDownload = staticFiles.Count;
+                progress.DownloadedCount = 0;
+                progress.TotalStateToComplete = staticFiles.Count;
+                progress.StateCount = 0;
+                progress.TotalBytesToDownload = staticFiles.Sum(x => new FileInfo(x).Length);
+                progress.DownloadedBytes = 0;
+
+                Report(InstallProgressState.Updating);
+
+                foreach (var newPath in staticFiles)
+                {
+                    var relPath = Path.GetRelativePath(tempExtractDir, newPath);
+
+                    if (relPath.StartsWith("vfs_files", StringComparison.OrdinalIgnoreCase) ||
+                        relPath.StartsWith("diff_", StringComparison.OrdinalIgnoreCase) ||
+                        relPath.Equals("patch.json", StringComparison.OrdinalIgnoreCase) ||
+                        relPath.Equals("delete_files.txt", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var fileSize = new FileInfo(newPath).Length;
+                    if (relPath.Equals("config.ini", StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.Copy(newPath, Path.Combine(installPath, "config.ini.new"), true);
+                        progress.DownloadedBytes += fileSize;
+                        progress.DownloadedCount++;
+                        progress.StateCount++;
+                        Report(InstallProgressState.Updating);
+                        continue;
+                    }
+
+                    var destPath = Path.Combine(installPath, relPath);
+                    var destDir = Path.GetDirectoryName(destPath)!;
+                    if (!Directory.Exists(destDir)) Directory.CreateDirectory(destDir);
+
+                    ForceDeleteFile(destPath);
+                    File.Copy(newPath, destPath, true);
+                    progress.DownloadedBytes += fileSize;
+                    progress.DownloadedCount++;
+                    progress.StateCount++;
+                    Report(InstallProgressState.Updating);
+                }
+
+                ResetSingleStageProgress();
+                Report(InstallProgressState.Updating);
+
+                await ApplyDeltaPatchAsync(tempExtractDir, installPath, manager.PatchManifestUrl, token,
+                    (patchedBytes, totalBytes) =>
+                    {
+                        progress.DownloadedBytes = patchedBytes;
+                        progress.TotalBytesToDownload = totalBytes;
+                        Report(InstallProgressState.Updating);
+                    });
+
+                CompleteSingleStageProgress();
+                Report(InstallProgressState.Updating);
+                
                 Report(InstallProgressState.Removing);
                 SharedStatic.InstanceLogger.LogInformation(
                     "[HgInstaller] Cleaning up legacy files and updating core components...");
@@ -262,40 +375,6 @@ public partial class HgGameInstaller
                     }
                 }
 
-                Report(InstallProgressState.Updating);
-                SharedStatic.InstanceLogger.LogInformation(
-                    "[HgInstaller] Copying static update files...");
-                foreach (var newPath in Directory.GetFiles(tempExtractDir, "*.*", SearchOption.AllDirectories))
-                {
-                    var relPath = Path.GetRelativePath(tempExtractDir, newPath);
-
-                    if (relPath.StartsWith("vfs_files", StringComparison.OrdinalIgnoreCase) ||
-                        relPath.StartsWith("diff_", StringComparison.OrdinalIgnoreCase) ||
-                        relPath.Equals("patch.json", StringComparison.OrdinalIgnoreCase) ||
-                        relPath.Equals("delete_files.txt", StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    if (relPath.Equals("config.ini", StringComparison.OrdinalIgnoreCase))
-                    {
-                        File.Copy(newPath, Path.Combine(installPath, "config.ini.new"), true);
-                        continue;
-                    }
-
-                    var destPath = Path.Combine(installPath, relPath);
-                    var destDir = Path.GetDirectoryName(destPath)!;
-                    if (!Directory.Exists(destDir)) Directory.CreateDirectory(destDir);
-
-                    ForceDeleteFile(destPath);
-                    File.Copy(newPath, destPath, true);
-                }
-
-                await ApplyDeltaPatchAsync(tempExtractDir, installPath, manager.PatchManifestUrl, token,
-                    (patchedBytes, totalBytes) =>
-                    {
-                        progress.DownloadedBytes = patchedBytes;
-                        progress.TotalBytesToDownload = totalBytes;
-                        Report(InstallProgressState.Updating);
-                    });
-
                 // 调试模式下保留沙盒目录，非调试模式下执行清理
                 if (!skipExtractForDebug)
                     try
@@ -309,6 +388,7 @@ public partial class HgGameInstaller
             }
             else
             {
+                ResetSingleStageProgress();
                 Report(InstallProgressState.Install);
                 SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Full update mechanism confirmed.");
                 await ExtractPackagesAsync(
@@ -322,6 +402,9 @@ public partial class HgGameInstaller
                         progress.TotalBytesToDownload = totalBytes;
                         Report(InstallProgressState.Install);
                     });
+
+                CompleteSingleStageProgress();
+                Report(InstallProgressState.Install);
             }
 
             try
@@ -419,7 +502,10 @@ public partial class HgGameInstaller
             var vfsBasePath = Path.Combine(targetGameRoot,
                 (manifest.VfsBasePath ?? "Hg_Data/StreamingAssets/VFS").Replace("/", "\\"));
 
-            var totalPatchSize = manifest.Files.Sum(f => f.Size);
+            var totalPatchSize = manifest.Files
+                .Where(f => !string.IsNullOrEmpty(f.LocalPath) ||
+                            (f.Patches != null && f.Patches.Count > 0))
+                .Sum(f => f.Size);
             long currentPatchedSize = 0;
 
             SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Building temporary extraction file map...");
@@ -431,7 +517,9 @@ public partial class HgGameInstaller
                 foreach (var file in allExtractedFiles) extractFileMap[Path.GetFileName(file)] = file;
             }, token);
 
-            var processedCount = 0;
+            var copyCount = 0;
+            var patchCount = 0;
+            var verifyOnlyCount = 0;
             var skippedNodes = new List<string>();
 
             SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Starting VFS delta patch pipeline...");
@@ -446,7 +534,6 @@ public partial class HgGameInstaller
                     continue;
                 }
 
-                var handled = false;
 
                 var targetFilePath = Path.Combine(
                     vfsBasePath,
@@ -466,9 +553,7 @@ public partial class HgGameInstaller
                         extractFileMap.TryGetValue(
                             Path.GetFileName(fileNode.LocalPath),
                             out var foundPath))
-                    {
                         sourceExtractedFile = foundPath;
-                    }
 
                     if (!File.Exists(sourceExtractedFile))
                     {
@@ -480,13 +565,29 @@ public partial class HgGameInstaller
                     ForceDeleteFile(targetFilePath);
                     File.Copy(sourceExtractedFile, targetFilePath, true);
 
+                    if (!string.IsNullOrEmpty(fileNode.Md5))
+                    {
+                        var isTargetMatch = await CheckMd5Async(
+                            targetFilePath,
+                            fileNode.Md5,
+                            token).ConfigureAwait(false);
+
+                        if (!isTargetMatch)
+                        {
+                            skippedNodes.Add(
+                                $"{fileNode.Name} | copied file md5 mismatch");
+
+                            continue;
+                        }
+                    }
+
                     Interlocked.Add(ref currentPatchedSize, fileNode.Size);
                     progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
 
                     SharedStatic.InstanceLogger.LogDebug(
                         $"[HgInstaller] [Copy] {fileNode.Name}");
 
-                    handled = true;
+                    copyCount++;
                 }
                 else if (fileNode.Patches != null && fileNode.Patches.Count > 0)
                 {
@@ -512,9 +613,7 @@ public partial class HgGameInstaller
                         extractFileMap.TryGetValue(
                             Path.GetFileName(patchInfo.PatchPath),
                             out var foundDiffPath))
-                    {
                         diffFilePath = foundDiffPath;
-                    }
 
                     if (!File.Exists(baseFilePath))
                     {
@@ -547,7 +646,7 @@ public partial class HgGameInstaller
                         SharedStatic.InstanceLogger.LogDebug(
                             $"[HgInstaller] [Skip Empty Patch] {fileNode.Name}");
 
-                        handled = true;
+                        patchCount++;
                     }
                     else
                     {
@@ -574,10 +673,22 @@ public partial class HgGameInstaller
                             ForceDeleteFile(targetFilePath);
                             File.Move(tempOutPath, targetFilePath, true);
 
+                            if (!string.IsNullOrEmpty(fileNode.Md5))
+                            {
+                                var isTargetMatch = await CheckMd5Async(
+                                    targetFilePath,
+                                    fileNode.Md5,
+                                    token).ConfigureAwait(false);
+
+                                if (!isTargetMatch)
+                                    throw new InvalidDataException(
+                                        $"[HgInstaller] Patched file MD5 mismatch: {fileNode.Name}");
+                            }
+
                             SharedStatic.InstanceLogger.LogDebug(
                                 $"[HgInstaller] [Patch] {fileNode.Name}");
 
-                            handled = true;
+                            patchCount++;
                         }
                         catch (Exception ex)
                         {
@@ -593,12 +704,11 @@ public partial class HgGameInstaller
                 }
                 else
                 {
-                    skippedNodes.Add(
-                        $"{fileNode.Name} | no local_path and no patch");
-                }
+                    SharedStatic.InstanceLogger.LogDebug(
+                        $"[HgInstaller] [VerifyOnly] {fileNode.Name}");
 
-                if (handled)
-                    processedCount++;
+                    verifyOnlyCount++;
+                }
             }
 
             if (skippedNodes.Count > 0)
@@ -616,9 +726,8 @@ public partial class HgGameInstaller
             }
 
             SharedStatic.InstanceLogger.LogInformation(
-                $"[HgInstaller] VFS delta patch pipeline executed successfully. Processed {processedCount}/{manifest.Files.Count} files.");
-            SharedStatic.InstanceLogger.LogInformation(
-                "[HgInstaller] VFS delta patch pipeline executed successfully.");
+                $"[HgInstaller] VFS delta patch pipeline executed successfully. " +
+                $"Copy={copyCount}, Patch={patchCount}, VerifyOnly={verifyOnlyCount}, Total={manifest.Files.Count}");
         }
 
         private async Task DownloadFileAsync(string url, string tempPath, long expectedSize, CancellationToken token,
@@ -752,10 +861,7 @@ public partial class HgGameInstaller
                 {
                     using var multiStream = new MultiVolumeStream(partFiles);
                     using var archiveFile = new ArchiveFile(multiStream);
-                    if (!string.IsNullOrEmpty(password))
-                    {
-                        archiveFile.SetArchivePassword(password);
-                    }
+                    if (!string.IsNullOrEmpty(password)) archiveFile.SetArchivePassword(password);
 
                     var totalSize = archiveFile.Entries.Sum(x => (long)x.Size);
                     long currentRead = 0;

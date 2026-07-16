@@ -9,10 +9,10 @@ using System.Runtime.InteropServices.Marshalling;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using Hi3Helper.Hypergryph.Core.Management.Api;
 using Hi3Helper.Plugin.Core;
 using Hi3Helper.Plugin.Core.Management;
 using Hi3Helper.Plugin.Core.Utility;
-using Hi3Helper.Hypergryph.Core.Management.Api;
 using Microsoft.Extensions.Logging;
 
 namespace Hi3Helper.Hypergryph.Core.Management;
@@ -141,7 +141,7 @@ public partial class HgGameInstaller : GameInstallerBase
 
         InstallProgress progress = default;
 
-        long lastReportTicks = DateTime.UtcNow.Ticks;
+        var lastReportTicks = DateTime.UtcNow.Ticks;
 
         void Report(InstallProgressState state)
         {
@@ -192,7 +192,6 @@ public partial class HgGameInstaller : GameInstallerBase
                         if (isMatch)
                         {
                             Interlocked.Add(ref alreadyDownloadedBytes, size);
-                            Interlocked.Add(ref progress.DownloadedBytes, size);
                             needsDownload = false;
                         }
                         else
@@ -208,10 +207,7 @@ public partial class HgGameInstaller : GameInstallerBase
 
                 if (needsDownload)
                 {
-                    if (File.Exists(tempPath) && new FileInfo(tempPath).Length > size)
-                    {
-                        ForceDeleteFile(tempPath);
-                    }
+                    if (File.Exists(tempPath) && new FileInfo(tempPath).Length > size) ForceDeleteFile(tempPath);
 
                     packsToDownload.Add(pack);
                 }

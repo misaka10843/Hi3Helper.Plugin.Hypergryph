@@ -7,10 +7,10 @@ using System.Net.Http.Json;
 using System.Runtime.InteropServices.Marshalling;
 using System.Threading;
 using System.Threading.Tasks;
-using Hi3Helper.Plugin.Core;
-using Hi3Helper.Plugin.Core.Management;
 using Hi3Helper.Hypergryph.Core.Management.Api;
 using Hi3Helper.Hypergryph.Core.Utils;
+using Hi3Helper.Plugin.Core;
+using Hi3Helper.Plugin.Core.Management;
 using Microsoft.Extensions.Logging;
 
 namespace Hi3Helper.Hypergryph.Core.Management;
@@ -54,32 +54,6 @@ public partial class HgGameManager : GameManagerBase
 
     internal List<HgPack>? GamePacks => GetGamePacks(GameInstallerKind.Update);
 
-    internal List<HgPack>? GetGamePacks(GameInstallerKind kind)
-    {
-        if (kind == GameInstallerKind.Preload)
-        {
-            if (_latestGameInfo?.PrePatch?.Patches is { Count: > 0 } prePatches)
-            {
-                SharedStatic.InstanceLogger.LogInformation(
-                    $"[HgCore] Preload detected, exposing PrePatch packs. Target version: {_latestGameInfo.PrePatch.Version}");
-                return prePatches;
-            }
-
-            SharedStatic.InstanceLogger.LogInformation("[HgCore] No preload package detected.");
-            return null;
-        }
-
-        if (IsDeltaUpdate)
-        {
-            SharedStatic.InstanceLogger.LogInformation(
-                "[HgCore] Delta update detected, exposing Patch packs.");
-            return _latestGameInfo!.Patch!.Patches;
-        }
-
-        SharedStatic.InstanceLogger.LogInformation("[HgCore] Full package detected.");
-        return _latestGameInfo?.Pkg?.Packs;
-    }
-
     private string CurrentGameExecutableByPreset { get; }
 
     protected override HttpClient ApiResponseHttpClient { get; set; } = new();
@@ -111,6 +85,32 @@ public partial class HgGameManager : GameManagerBase
 
     protected override GameVersion ApiGameVersion { get; set; }
     protected override GameVersion ApiPreloadGameVersion { get; set; }
+
+    internal List<HgPack>? GetGamePacks(GameInstallerKind kind)
+    {
+        if (kind == GameInstallerKind.Preload)
+        {
+            if (_latestGameInfo?.PrePatch?.Patches is { Count: > 0 } prePatches)
+            {
+                SharedStatic.InstanceLogger.LogInformation(
+                    $"[HgCore] Preload detected, exposing PrePatch packs. Target version: {_latestGameInfo.PrePatch.Version}");
+                return prePatches;
+            }
+
+            SharedStatic.InstanceLogger.LogInformation("[HgCore] No preload package detected.");
+            return null;
+        }
+
+        if (IsDeltaUpdate)
+        {
+            SharedStatic.InstanceLogger.LogInformation(
+                "[HgCore] Delta update detected, exposing Patch packs.");
+            return _latestGameInfo!.Patch!.Patches;
+        }
+
+        SharedStatic.InstanceLogger.LogInformation("[HgCore] Full package detected.");
+        return _latestGameInfo?.Pkg?.Packs;
+    }
 
     protected override void SetGamePathInner(string gamePath)
     {
@@ -214,14 +214,10 @@ public partial class HgGameManager : GameManagerBase
                 ApiGameVersion = new GameVersion(_latestGameInfo.Version);
 
             if (!string.IsNullOrEmpty(_latestGameInfo.PrePatch?.Version))
-            {
                 ApiPreloadGameVersion =
                     new GameVersion(_latestGameInfo.PrePatch.Version);
-            }
             else
-            {
                 ApiPreloadGameVersion = GameVersion.Empty;
-            }
 
             if (_latestGameInfo.Pkg != null) GameResourceBaseUrl = _latestGameInfo.Pkg.FilePath;
 

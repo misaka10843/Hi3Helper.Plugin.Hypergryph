@@ -11,10 +11,10 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Hi3Helper.Plugin.Core;
-using Hi3Helper.Plugin.Core.Management;
 using Hi3Helper.Hypergryph.Core.Management.Api;
 using Hi3Helper.Hypergryph.Core.Utils;
+using Hi3Helper.Plugin.Core;
+using Hi3Helper.Plugin.Core.Management;
 using Microsoft.Extensions.Logging;
 
 namespace Hi3Helper.Hypergryph.Core.Management;
@@ -65,6 +65,22 @@ public class HgGameRepairer
         {
             progressDelegate?.Invoke(in progress);
             progressStateDelegate?.Invoke(state);
+        }
+
+        var lastVerifyReportTicks = DateTime.UtcNow.Ticks;
+        var reportIntervalTicks = TimeSpan.FromMilliseconds(300).Ticks;
+
+        void ReportVerifyThrottled()
+        {
+            var nowTicks = DateTime.UtcNow.Ticks;
+            var oldTicks = Interlocked.Read(ref lastVerifyReportTicks);
+
+            if (nowTicks - oldTicks >= reportIntervalTicks &&
+                Interlocked.CompareExchange(
+                    ref lastVerifyReportTicks,
+                    nowTicks,
+                    oldTicks) == oldTicks)
+                Report(InstallProgressState.Verify);
         }
 
         Report(InstallProgressState.Preparing);
@@ -153,15 +169,46 @@ public class HgGameRepairer
         long brokenSize = 0;
 
         await Parallel.ForEachAsync(manifestNodes,
-            new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = token }, async (node, innerToken) =>
+            new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = token },
+            async (node, innerToken) =>
             {
                 var isOk = false;
-                var localPath = Path.Combine(_installPath, node.Path!.Replace("/", "\\"));
+                var localPath = Path.Combine(
+                    _installPath,
+                    node.Path!.Replace("/", "\\"));
 
                 if (File.Exists(localPath))
                 {
                     var fi = new FileInfo(localPath);
-                    if (fi.Length == node.Size) isOk = await CheckMd5Async(localPath, node.Md5!, innerToken);
+
+                    if (fi.Length == node.Size)
+                    {
+                        isOk = await CheckMd5Async(
+                            localPath,
+                            node.Md5!,
+                            innerToken,
+                            delta =>
+                            {
+                                Interlocked.Add(
+                                    ref progress.DownloadedBytes,
+                                    delta);
+                                ReportVerifyThrottled();
+                            }).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        Interlocked.Add(
+                            ref progress.DownloadedBytes,
+                            node.Size);
+                        ReportVerifyThrottled();
+                    }
+                }
+                else
+                {
+                    Interlocked.Add(
+                        ref progress.DownloadedBytes,
+                        node.Size);
+                    ReportVerifyThrottled();
                 }
 
                 if (!isOk)
@@ -170,11 +217,10 @@ public class HgGameRepairer
                     Interlocked.Add(ref brokenSize, node.Size);
                 }
 
-                Interlocked.Add(ref progress.DownloadedBytes, node.Size);
                 Interlocked.Increment(ref progress.DownloadedCount);
                 Interlocked.Increment(ref progress.StateCount);
                 Report(InstallProgressState.Verify);
-            });
+            }).ConfigureAwait(false);
 
         var downloadList = brokenFiles.ToList();
         if (downloadList.Count == 0)
@@ -348,13 +394,60 @@ public class HgGameRepairer
             }
     }
 
-    private async Task<bool> CheckMd5Async(string filePath, string expectedMd5, CancellationToken token)
+    private async Task<bool> CheckMd5Async(
+        string filePath,
+        string expectedMd5,
+        CancellationToken token,
+        Action<long>? onProgress = null)
     {
         if (!File.Exists(filePath)) return false;
+
         using var md5 = MD5.Create();
-        await using var stream = File.OpenRead(filePath);
-        var hashBytes = await md5.ComputeHashAsync(stream, token);
-        return BitConverter.ToString(hashBytes).Replace("-", "")
-            .Equals(expectedMd5, StringComparison.OrdinalIgnoreCase);
+
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            1024 * 1024,
+            true);
+
+        var buffer = ArrayPool<byte>.Shared.Rent(1024 * 1024);
+
+        try
+        {
+            int read;
+
+            while ((read = await stream.ReadAsync(
+                       buffer.AsMemory(0, buffer.Length),
+                       token).ConfigureAwait(false)) > 0)
+            {
+                md5.TransformBlock(
+                    buffer,
+                    0,
+                    read,
+                    null,
+                    0);
+
+                onProgress?.Invoke(read);
+            }
+
+            md5.TransformFinalBlock(
+                Array.Empty<byte>(),
+                0,
+                0);
+
+            var actualMd5 = BitConverter.ToString(md5.Hash!)
+                .Replace("-", "")
+                .ToLowerInvariant();
+
+            return actualMd5.Equals(
+                expectedMd5,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 }
