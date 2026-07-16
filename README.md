@@ -1,3 +1,12 @@
+> [!CAUTION]
+> There is currently an issue with the update feature across all versions of the plugin! Please try to use the official launcher to update your game if possible.
+> 
+> Specific Details: https://github.com/misaka10843/Hi3Helper.Plugin.Hypergryph/issues/15#issuecomment-4987551876
+> 
+> Although the current update process includes a fallback mechanism that deletes corrupted files and redownloads them from the server, you might end up having to re-download up to 60% of the total game size (around 30GB).
+> 
+> If you are on a metered or limited data plan, it is highly recommended to wait until the plugin is fixed before using it to update!
+
 <p align="center">
   <img width="512px" height="auto" src="./.github/assets/CollapseLauncherIdolType.png"/>
 </p>

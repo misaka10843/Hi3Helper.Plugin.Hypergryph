@@ -1,4 +1,13 @@
-﻿<p align="center">
+﻿> [!CAUTION]
+> 当前插件所有版本的更新功能都有问题！请尽量使用官方启动器进行更新！
+> 
+> 具体情况： https://github.com/misaka10843/Hi3Helper.Plugin.Hypergryph/issues/15#issuecomment-4987551876
+> 
+> 当前更新虽然有保底机制会将更新损坏的文件删除后重新从服务器中下载，但是可能会超过60%的体积都要重新下载（大约30G左右）
+> 
+> 如果您是使用的计费流量等，建议等待插件修复后再使用插件进行更新！
+
+<p align="center">
   <img width="512px" height="auto" src="./.github/assets/CollapseLauncherIdolType.png"/>
 </p>
 
