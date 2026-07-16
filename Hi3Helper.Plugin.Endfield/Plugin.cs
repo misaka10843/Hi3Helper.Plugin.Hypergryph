@@ -18,7 +18,8 @@ public partial class EndfieldPlugin : PluginBase
     [
         new EndfieldCnPresetConfig(),
         new EndfieldGlobalPresetConfig(),
-        new EndfieldBiliPresetConfig()
+        new EndfieldBiliPresetConfig(),
+        new EndfieldPlayPresetConfig()
     ];
 
     private static DateTime _pluginCreationDate = new(2026, 01, 27, 00, 00, 0, DateTimeKind.Utc);
