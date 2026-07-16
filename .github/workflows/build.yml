@@ -100,11 +100,12 @@ jobs:
             -r win-x64 `
             --self-contained true `
             -p:PublishProfile=DebugNoReflectionPublish `
-            --no-restore
+            --no-restore `
+            -o ./publish_output/${{ matrix.plugin }}
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.plugin }}-DebugNoReflectionPublish
           path: |
-            ${{ matrix.plugin }}/bin/**/publish/**
+            ./publish_output/${{ matrix.plugin }}/**
