@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -252,7 +253,13 @@ public partial class HgGameInstaller
             {
                 SharedStatic.InstanceLogger.LogInformation(
                     "[HgInstaller] Delta update mechanism confirmed. Initializing sandbox extraction...");
+
+                await EnsureHpatchzAsync(installPath, token).ConfigureAwait(false);
+                SharedStatic.InstanceLogger.LogInformation(
+                    "[HgInstaller] hpatchz.exe is ready.");
+
                 var tempExtractDir = Path.Combine(installPath, "_Hg_DeltaTemp");
+                var stageDir = Path.Combine(installPath, "_Hg_ApplyStage");
                 // DEBUG
                 var skipExtractForDebug = false;
 
@@ -260,8 +267,12 @@ public partial class HgGameInstaller
                 {
                     ResetSingleStageProgress();
                     Report(InstallProgressState.Updating);
+
                     if (Directory.Exists(tempExtractDir)) Directory.Delete(tempExtractDir, true);
+                    if (Directory.Exists(stageDir)) Directory.Delete(stageDir, true);
+
                     Directory.CreateDirectory(tempExtractDir);
+                    Directory.CreateDirectory(stageDir);
 
                     await ExtractPackagesAsync(
                         downloadDir,
@@ -278,10 +289,14 @@ public partial class HgGameInstaller
                     CompleteSingleStageProgress();
                     Report(InstallProgressState.Updating);
                 }
+                else
+                {
+                    Directory.CreateDirectory(stageDir);
+                }
 
                 Report(InstallProgressState.Updating);
                 SharedStatic.InstanceLogger.LogInformation(
-                    "[HgInstaller] Copying static update files...");
+                    "[HgInstaller] Copying static update files to staging directory...");
 
                 var staticFiles = Directory.GetFiles(tempExtractDir, "*.*", SearchOption.AllDirectories)
                     .Where(newPath =>
@@ -317,7 +332,7 @@ public partial class HgGameInstaller
                     var fileSize = new FileInfo(newPath).Length;
                     if (relPath.Equals("config.ini", StringComparison.OrdinalIgnoreCase))
                     {
-                        File.Copy(newPath, Path.Combine(installPath, "config.ini.new"), true);
+                        File.Copy(newPath, Path.Combine(stageDir, "config.ini.new"), true);
                         progress.DownloadedBytes += fileSize;
                         progress.DownloadedCount++;
                         progress.StateCount++;
@@ -325,7 +340,7 @@ public partial class HgGameInstaller
                         continue;
                     }
 
-                    var destPath = Path.Combine(installPath, relPath);
+                    var destPath = Path.Combine(stageDir, relPath);
                     var destDir = Path.GetDirectoryName(destPath)!;
                     if (!Directory.Exists(destDir)) Directory.CreateDirectory(destDir);
 
@@ -340,7 +355,7 @@ public partial class HgGameInstaller
                 ResetSingleStageProgress();
                 Report(InstallProgressState.Updating);
 
-                await ApplyDeltaPatchAsync(tempExtractDir, installPath, manager.PatchManifestUrl, token,
+                await ApplyDeltaPatchAsync(tempExtractDir, installPath, stageDir, manager.PatchManifestUrl, token,
                     (patchedBytes, totalBytes) =>
                     {
                         progress.DownloadedBytes = patchedBytes;
@@ -350,10 +365,43 @@ public partial class HgGameInstaller
 
                 CompleteSingleStageProgress();
                 Report(InstallProgressState.Updating);
-                
+
+                SharedStatic.InstanceLogger.LogInformation(
+                    "[HgInstaller] Applying staged files to game directory...");
+
+                var stagedFiles = Directory.GetFiles(
+                    stageDir,
+                    "*",
+                    SearchOption.AllDirectories);
+
+                var stagedFileSet = stagedFiles
+                    .Select(file => Path.GetRelativePath(stageDir, file)
+                        .Replace("\\", "/"))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                progress.TotalCountToDownload = stagedFiles.Length;
+                progress.DownloadedCount = 0;
+                progress.TotalStateToComplete = stagedFiles.Length;
+                progress.StateCount = 0;
+                progress.TotalBytesToDownload = stagedFiles.Sum(x => new FileInfo(x).Length);
+                progress.DownloadedBytes = 0;
+
+                Report(InstallProgressState.Updating);
+
+                CommitStageDirectory(
+                    stageDir,
+                    installPath,
+                    (committedBytes, committedCount) =>
+                    {
+                        progress.DownloadedBytes = committedBytes;
+                        progress.DownloadedCount = committedCount;
+                        progress.StateCount = committedCount;
+                        Report(InstallProgressState.Updating);
+                    });
+
                 Report(InstallProgressState.Removing);
                 SharedStatic.InstanceLogger.LogInformation(
-                    "[HgInstaller] Cleaning up legacy files and updating core components...");
+                    "[HgInstaller] Cleaning up legacy files after staged apply...");
 
                 var deleteListPath = Path.Combine(tempExtractDir, "delete_files.txt");
                 if (File.Exists(deleteListPath))
@@ -361,9 +409,26 @@ public partial class HgGameInstaller
                     var filesToDelete = File.ReadAllLines(deleteListPath);
                     foreach (var fileLine in filesToDelete)
                     {
-                        if (string.IsNullOrWhiteSpace(fileLine)) continue;
-                        var targetDeletePath = Path.Combine(installPath, fileLine.Trim().Replace("/", "\\"));
+                        if (string.IsNullOrWhiteSpace(fileLine))
+                            continue;
+
+                        var normalizedRelPath = fileLine.Trim()
+                            .Replace("\\", "/");
+
+                        if (stagedFileSet.Contains(normalizedRelPath))
+                        {
+                            SharedStatic.InstanceLogger.LogDebug(
+                                $"[HgInstaller] Skip deleting staged file: {normalizedRelPath}");
+
+                            continue;
+                        }
+
+                        var targetDeletePath = Path.Combine(
+                            installPath,
+                            normalizedRelPath.Replace("/", "\\"));
+
                         if (File.Exists(targetDeletePath))
+                        {
                             try
                             {
                                 ForceDeleteFile(targetDeletePath);
@@ -372,19 +437,33 @@ public partial class HgGameInstaller
                             {
                                 SharedStatic.InstanceLogger.LogDebug($"[HgCore] File delete failed: {ex.Message}");
                             }
+                        }
                     }
                 }
 
                 // 调试模式下保留沙盒目录，非调试模式下执行清理
                 if (!skipExtractForDebug)
+                {
                     try
                     {
                         Directory.Delete(tempExtractDir, true);
                     }
                     catch (Exception ex)
                     {
-                        SharedStatic.InstanceLogger.LogDebug($"[HgCore] Temp dir cleanup failed: {ex.Message}");
+                        SharedStatic.InstanceLogger.LogDebug(
+                            $"[HgCore] Temp dir cleanup failed: {ex.Message}");
                     }
+
+                    try
+                    {
+                        Directory.Delete(stageDir, true);
+                    }
+                    catch (Exception ex)
+                    {
+                        SharedStatic.InstanceLogger.LogDebug(
+                            $"[HgCore] Stage dir cleanup failed: {ex.Message}");
+                    }
+                }
             }
             else
             {
@@ -451,8 +530,8 @@ public partial class HgGameInstaller
             Report(InstallProgressState.Completed);
         }
 
-        private async Task ApplyDeltaPatchAsync(string tempExtractDir, string targetGameRoot, string? patchJsonUrl,
-            CancellationToken token, Action<long, long>? progressCallback = null)
+        private async Task ApplyDeltaPatchAsync(string tempExtractDir, string targetGameRoot, string stageRoot,
+            string? patchJsonUrl, CancellationToken token, Action<long, long>? progressCallback = null)
         {
             HgPatchManifest? manifest = null;
             var localPatchJsonPath = Path.Combine(tempExtractDir, "patch.json");
@@ -499,8 +578,11 @@ public partial class HgGameInstaller
                 throw new InvalidDataException(
                     "[HgInstaller] Failed to load or deserialize Patch Manifest (patch.json).");
 
-            var vfsBasePath = Path.Combine(targetGameRoot,
-                (manifest.VfsBasePath ?? "Hg_Data/StreamingAssets/VFS").Replace("/", "\\"));
+            var vfsRelativePath = (manifest.VfsBasePath ?? "Hg_Data/StreamingAssets/VFS")
+                .Replace("/", "\\");
+
+            var sourceVfsBasePath = Path.Combine(targetGameRoot, vfsRelativePath);
+            var stageVfsBasePath = Path.Combine(stageRoot, vfsRelativePath);
 
             var totalPatchSize = manifest.Files
                 .Where(f => !string.IsNullOrEmpty(f.LocalPath) ||
@@ -534,9 +616,8 @@ public partial class HgGameInstaller
                     continue;
                 }
 
-
                 var targetFilePath = Path.Combine(
-                    vfsBasePath,
+                    stageVfsBasePath,
                     fileNode.Name.Replace("/", "\\"));
 
                 var targetDir = Path.GetDirectoryName(targetFilePath)!;
@@ -602,7 +683,7 @@ public partial class HgGameInstaller
                     }
 
                     var baseFilePath = Path.Combine(
-                        vfsBasePath,
+                        sourceVfsBasePath,
                         patchInfo.BaseFile.Replace("/", "\\"));
 
                     var diffFilePath = Path.Combine(
@@ -629,6 +710,20 @@ public partial class HgGameInstaller
                         continue;
                     }
 
+                    if (!string.IsNullOrEmpty(patchInfo.BaseMd5))
+                    {
+                        var isBaseMatch = await CheckMd5Async(
+                            baseFilePath,
+                            patchInfo.BaseMd5,
+                            token).ConfigureAwait(false);
+
+                        if (!isBaseMatch)
+                        {
+                            throw new InvalidDataException(
+                                $"[HgInstaller] Base file MD5 mismatch: {patchInfo.BaseFile} -> target {fileNode.Name}");
+                        }
+                    }
+
                     if (new FileInfo(diffFilePath).Length == 0)
                     {
                         if (!string.Equals(
@@ -638,6 +733,22 @@ public partial class HgGameInstaller
                         {
                             ForceDeleteFile(targetFilePath);
                             File.Copy(baseFilePath, targetFilePath, true);
+                        }
+
+                        if (!string.IsNullOrEmpty(fileNode.Md5))
+                        {
+                            var isTargetMatch = await CheckMd5Async(
+                                targetFilePath,
+                                fileNode.Md5,
+                                token).ConfigureAwait(false);
+
+                            if (!isTargetMatch)
+                            {
+                                skippedNodes.Add(
+                                    $"{fileNode.Name} | empty patch target md5 mismatch");
+
+                                continue;
+                            }
                         }
 
                         Interlocked.Add(ref currentPatchedSize, fileNode.Size);
@@ -654,36 +765,50 @@ public partial class HgGameInstaller
 
                         try
                         {
-                            var hdiffPatcher = new HDiffPatch();
-                            hdiffPatcher.Initialize(diffFilePath);
+                            var hdiffOldSize = HDiffPatch.GetHDiffOldSize(diffFilePath);
+                            var hdiffNewSize = HDiffPatch.GetHDiffNewSize(diffFilePath);
+                            var header = HDiffPatch.GetHDiffHeaderInfo(diffFilePath);
 
-                            Action<long> onPatchProgress = deltaBytes =>
-                            {
-                                Interlocked.Add(ref currentPatchedSize, deltaBytes);
-                                progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
-                            };
+                            SharedStatic.InstanceLogger.LogDebug(
+                                $"[HgInstaller] HDiff header: oldSize={hdiffOldSize}, newSize={hdiffNewSize}, " +
+                                $"baseSize={new FileInfo(baseFilePath).Length}, targetSize={fileNode.Size}, diff={diffFilePath}");
 
-                            hdiffPatcher.Patch(
+                            SharedStatic.InstanceLogger.LogDebug(
+                                $"[HgInstaller] HDiff header detail: magic={header.headerInfo.headerMagic}, " +
+                                $"comp={header.headerInfo.compMode}, checksum={header.headerInfo.checksumMode}, " +
+                                $"singleCompressed={header.headerInfo.isSingleCompressedDiff}, " +
+                                $"isInputDir={header.headerInfo.isInputDir}, isOutputDir={header.headerInfo.isOutputDir}");
+
+                            ForceDeleteFile(tempOutPath);
+
+                            await RunHpatchzAsync(
+                                targetGameRoot,
                                 baseFilePath,
+                                diffFilePath,
                                 tempOutPath,
-                                true,
-                                onPatchProgress,
-                                token);
+                                token).ConfigureAwait(false);
 
-                            ForceDeleteFile(targetFilePath);
-                            File.Move(tempOutPath, targetFilePath, true);
+                            Interlocked.Add(ref currentPatchedSize, fileNode.Size);
+                            progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
 
                             if (!string.IsNullOrEmpty(fileNode.Md5))
                             {
                                 var isTargetMatch = await CheckMd5Async(
-                                    targetFilePath,
+                                    tempOutPath,
                                     fileNode.Md5,
                                     token).ConfigureAwait(false);
 
                                 if (!isTargetMatch)
+                                {
+                                    ForceDeleteFile(tempOutPath);
+
                                     throw new InvalidDataException(
                                         $"[HgInstaller] Patched file MD5 mismatch: {fileNode.Name}");
+                                }
                             }
+
+                            ForceDeleteFile(targetFilePath);
+                            File.Move(tempOutPath, targetFilePath, true);
 
                             SharedStatic.InstanceLogger.LogDebug(
                                 $"[HgInstaller] [Patch] {fileNode.Name}");
@@ -817,6 +942,189 @@ public partial class HgGameInstaller
                         $"[HgInstaller] Download interrupted, retrying ({attempt}/{maxRetries}) for {Path.GetFileName(url)}...");
                     await Task.Delay(1000, token);
                 }
+        }
+
+        private static HashSet<string> BuildStageRelativeFileSet(string stageDir)
+        {
+            return Directory.GetFiles(stageDir, "*", SearchOption.AllDirectories)
+                .Select(file => Path.GetRelativePath(stageDir, file)
+                    .Replace("\\", "/"))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static void CommitStageDirectory(
+            string stageDir,
+            string targetRoot,
+            Action<long, int>? progressCallback = null)
+        {
+            var stagedFiles = Directory.GetFiles(
+                stageDir,
+                "*",
+                SearchOption.AllDirectories);
+
+            long committedBytes = 0;
+            var committedCount = 0;
+
+            foreach (var stagedFile in stagedFiles)
+            {
+                var fileSize = new FileInfo(stagedFile).Length;
+
+                var relPath = Path.GetRelativePath(stageDir, stagedFile);
+                var targetPath = Path.Combine(targetRoot, relPath);
+                var targetDir = Path.GetDirectoryName(targetPath)!;
+
+                if (!Directory.Exists(targetDir))
+                    Directory.CreateDirectory(targetDir);
+
+                ForceDeleteFile(targetPath);
+                File.Copy(stagedFile, targetPath, true);
+
+                committedBytes += fileSize;
+                committedCount++;
+
+                progressCallback?.Invoke(committedBytes, committedCount);
+            }
+        }
+
+        private static async Task<string> EnsureHpatchzAsync(
+            string targetGameRoot,
+            CancellationToken token)
+        {
+            var toolsDir = Path.Combine(targetGameRoot, "_Hg_Tools");
+            Directory.CreateDirectory(toolsDir);
+
+            var hpatchzPath = Path.Combine(toolsDir, "hpatchz.exe");
+
+            if (File.Exists(hpatchzPath) && new FileInfo(hpatchzPath).Length > 0)
+                return hpatchzPath;
+
+            var resourceNames = new List<string>();
+
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                string assemblyName;
+
+                try
+                {
+                    assemblyName = assembly.GetName().Name ?? "<unknown>";
+                }
+                catch
+                {
+                    assemblyName = "<unknown>";
+                }
+
+                string[] names;
+
+                try
+                {
+                    names = assembly.GetManifestResourceNames();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var name in names)
+                {
+                    resourceNames.Add($"{assemblyName}: {name}");
+
+                    if (!name.Equals("hpatchz.exe", StringComparison.OrdinalIgnoreCase) &&
+                        !name.EndsWith(".hpatchz.exe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    await using var resourceStream = assembly.GetManifestResourceStream(name);
+
+                    if (resourceStream == null)
+                        continue;
+
+                    await using var fileStream = new FileStream(
+                        hpatchzPath,
+                        FileMode.Create,
+                        FileAccess.Write,
+                        FileShare.None,
+                        1024 * 1024,
+                        true);
+
+                    await resourceStream.CopyToAsync(fileStream, token).ConfigureAwait(false);
+                    await fileStream.FlushAsync(token).ConfigureAwait(false);
+
+                    SharedStatic.InstanceLogger.LogInformation(
+                        $"[HgInstaller] Extracted embedded hpatchz.exe from resource: {assemblyName}:{name}");
+
+                    return hpatchzPath;
+                }
+            }
+
+            var availableResources = resourceNames.Count == 0
+                ? "<no manifest resources found>"
+                : string.Join(Environment.NewLine, resourceNames);
+
+            throw new FileNotFoundException(
+                "[HgInstaller] Embedded hpatchz.exe resource was not found. Available resources:" +
+                Environment.NewLine +
+                availableResources);
+        }
+
+
+        private static async Task RunHpatchzAsync(
+            string targetGameRoot,
+            string oldFile,
+            string diffFile,
+            string outputFile,
+            CancellationToken token)
+        {
+            var hpatchzPath = await EnsureHpatchzAsync(
+                targetGameRoot,
+                token).ConfigureAwait(false);
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = hpatchzPath,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(hpatchzPath)
+            };
+
+            psi.ArgumentList.Add(oldFile);
+            psi.ArgumentList.Add(diffFile);
+            psi.ArgumentList.Add(outputFile);
+
+            using var process = new Process
+            {
+                StartInfo = psi,
+                EnableRaisingEvents = true
+            };
+
+            process.Start();
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(token);
+            var stderrTask = process.StandardError.ReadToEndAsync(token);
+
+            await process.WaitForExitAsync(token).ConfigureAwait(false);
+
+            var stdout = await stdoutTask.ConfigureAwait(false);
+            var stderr = await stderrTask.ConfigureAwait(false);
+
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidDataException(
+                    $"[HgInstaller] hpatchz failed. ExitCode={process.ExitCode}" +
+                    Environment.NewLine +
+                    "stdout:" +
+                    Environment.NewLine +
+                    stdout +
+                    Environment.NewLine +
+                    "stderr:" +
+                    Environment.NewLine +
+                    stderr);
+            }
+
+            SharedStatic.InstanceLogger.LogDebug(
+                $"[HgInstaller] hpatchz completed. stdout:{Environment.NewLine}{stdout}");
         }
 
         private async Task<bool> CheckMd5Async(string filePath, string expectedMd5, CancellationToken token)
