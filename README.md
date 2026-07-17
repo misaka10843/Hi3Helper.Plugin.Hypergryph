@@ -1,11 +1,9 @@
 > [!CAUTION]
-> There is currently an issue with the update feature across all versions of the plugin! Please try to use the official launcher to update your game if possible.
+> Please upgrade the plugin to version 1.1.0 or higher immediately!
 > 
-> Specific Details: https://github.com/misaka10843/Hi3Helper.Plugin.Hypergryph/issues/15#issuecomment-4987551876
+> It has been confirmed that all older versions below 1.1.0 suffer from a critical update bug. Issues within `SharpHDiffPatch.Core` prevent the plugin from performing effective patching, which in turn triggers the client to re-download approximately 30GB of data from the server.
 > 
-> Although the current update process includes a fallback mechanism that deletes corrupted files and redownloads them from the server, you might end up having to re-download up to 60% of the total game size (around 30GB).
-> 
-> If you are on a metered or limited data plan, it is highly recommended to wait until the plugin is fixed before using it to update!
+> This issue has been fully resolved in version 1.1.0. To avoid unnecessary bandwidth consumption and long download times, please be sure to update your plugin immediately!
 
 <p align="center">
   <img width="512px" height="auto" src="./.github/assets/CollapseLauncherIdolType.png"/>
@@ -62,7 +60,7 @@ You can download the plugin via the [Official Collapse Launcher Website](https:/
 
 ### 🚧 Development Plan / ToDo
 
-- [ ] **Pre-download Support**: Awaiting the official launcher to implement relevant interfaces.
+- [x] **Pre-download Support**: Awaiting the official launcher to implement relevant interfaces.
 - [ ] **Manual Integrity Check**: Collapse Launcher does not seem to provide relevant API interfaces for manual
   verification; awaiting upstream updates.
 - [ ] **Social Media Panel**: Integrate official social media feed displays (Basic support exists, but currently
