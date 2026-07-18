@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
@@ -46,6 +46,7 @@ public partial class HgGameInstaller : GameInstallerBase
         await InitAsync(token).ConfigureAwait(false);
 
         if (GameManager is not HgGameManager manager) return 0L;
+        if (gameInstallerKind == GameInstallerKind.Update && manager.IsManualVerifyRequested) return 0L;
 
         var packs = manager.GetGamePacks(gameInstallerKind);
         if (packs == null) return 0L;
@@ -62,6 +63,7 @@ public partial class HgGameInstaller : GameInstallerBase
     {
         await InitAsync(token).ConfigureAwait(false);
         if (GameManager is not HgGameManager manager) return 0L;
+        if (gameInstallerKind == GameInstallerKind.Update && manager.IsManualVerifyRequested) return 0L;
 
         var packs = manager.GetGamePacks(gameInstallerKind);
         if (packs == null) return 0L;
@@ -101,10 +103,35 @@ public partial class HgGameInstaller : GameInstallerBase
         return StartInstallCoreAsync(GameInstallerKind.Install, progressDelegate, progressStateDelegate, token);
     }
 
-    protected override Task StartUpdateAsyncInner(InstallProgressDelegate? progressDelegate,
+    protected override async Task StartUpdateAsyncInner(InstallProgressDelegate? progressDelegate,
         InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
     {
-        return StartInstallCoreAsync(GameInstallerKind.Update, progressDelegate, progressStateDelegate, token);
+        await InitAsync(token).ConfigureAwait(false);
+
+        if (GameManager is not HgGameManager manager)
+            throw new InvalidOperationException("GameManager is not HgGameManager");
+
+        if (!manager.IsManualVerifyRequested)
+        {
+            await StartInstallCoreAsync(GameInstallerKind.Update, progressDelegate, progressStateDelegate, token)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        GameManager.GetGamePath(out string? installPath);
+        if (string.IsNullOrWhiteSpace(installPath) || !Directory.Exists(installPath))
+            throw new DirectoryNotFoundException("The game installation directory is missing.");
+
+        SharedStatic.InstanceLogger.LogInformation(
+            $"[HgInstaller] {HgGameManager.ManualVerifyMarkerFileName} detected. Starting manual verification.");
+
+        progressStateDelegate?.Invoke(InstallProgressState.Preparing);
+
+        var repairer = new HgGameRepairer(_downloadHttpClient, manager, installPath);
+        await repairer.StartRepairAsync(progressDelegate, progressStateDelegate, token).ConfigureAwait(false);
+
+        manager.CompleteManualVerifyRequest();
+        progressStateDelegate?.Invoke(InstallProgressState.Completed);
     }
 
     protected override Task StartPreloadAsyncInner(InstallProgressDelegate? progressDelegate,

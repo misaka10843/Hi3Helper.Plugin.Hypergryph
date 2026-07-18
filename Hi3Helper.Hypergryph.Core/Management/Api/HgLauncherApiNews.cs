@@ -200,37 +200,60 @@ public partial class HgLauncherApiNews : LauncherApiNewsBase
     public override void GetSocialMediaEntries(out nint handle, out int count, out bool isDisposable,
         out bool isAllocated)
     {
-        // currently, we are unable to obtain the icon link from the API. the hard-coded method has certain limitations and we have temporarily stopped adding.
-        if (true)
+        var sidebars = _sidebarResponse?.Sidebars;
+        if (sidebars == null || sidebars.Count == 0)
         {
             InitializeEmpty(out handle, out count, out isDisposable, out isAllocated);
+            return;
         }
-        else
+
+        count = sidebars.Count;
+        var memory = PluginDisposableMemory<LauncherSocialMediaEntry>.Alloc(count);
+        handle = memory.AsSafePointer();
+        isDisposable = true;
+        isAllocated = true;
+
+        for (var i = 0; i < count; i++)
         {
-            var sidebars = _sidebarResponse?.Sidebars;
-            if (sidebars == null || sidebars.Count == 0)
-            {
-                InitializeEmpty(out handle, out count, out isDisposable, out isAllocated);
-                return;
-            }
+            var item = sidebars[i];
+            string media = item.Media?.Trim() ?? string.Empty;
+            string description = HgSocialMediaIcons.ResolveDisplayName(media);
+            
+            string jumpUrl = item.JumpUrl
+                             ?? item.SidebarLabels?
+                                 .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.JumpUrl))?
+                                 .JumpUrl
+                             ?? string.Empty;
 
-            count = sidebars.Count;
-            var memory = PluginDisposableMemory<LauncherSocialMediaEntry>.Alloc(count);
-            handle = memory.AsSafePointer();
-            isDisposable = true;
-            isAllocated = true;
+            ReadOnlySpan<byte> iconData = HgSocialMediaIcons.Resolve(media);
+            SharedStatic.InstanceLogger.LogInformation(
+                "[HgNews][SocialMedia] Index={Index}, Media='{Media}', Description='{Description}', IconBytes={IconBytes}, JumpUrl='{JumpUrl}', QrUrl='{QrUrl}', ChildCount={ChildCount}",
+                i, media, description, iconData.Length, jumpUrl, item.Pic?.Url ?? "<none>", item.SidebarLabels?.Count ?? 0);
 
-            for (var i = 0; i < count; i++)
-            {
-                var item = sidebars[i];
-                var iconUrl = item.Pic?.Url ?? "";
-                var description = item.Pic?.Description ?? "";
-                var jumpUrl = item.JumpUrl ?? "";
+            ref var entry = ref memory[i];
+            entry.WriteIcon(iconData);
+            entry.WriteIconHover(iconData);
+            entry.WriteDescription(description);
 
-                ref var entry = ref memory[i];
-                entry.WriteIcon(iconUrl);
+            SharedStatic.InstanceLogger.LogInformation(
+                "[HgNews][SocialMedia] Entry written: Index={Index}, Media='{Media}', IconPathLength={IconPathLength}, HoverPathLength={HoverPathLength}",
+                i, media, entry.IconPath?.Length ?? 0, entry.IconHoverPath?.Length ?? 0);
+
+            if (!string.IsNullOrWhiteSpace(jumpUrl))
                 entry.WriteClickUrl(jumpUrl);
-                entry.WriteDescription(description);
+
+            // pic.url is the hover QR/promo image
+            if (!string.IsNullOrWhiteSpace(item.Pic?.Url))
+            {
+                entry.WriteQrImage(item.Pic.Url);
+                entry.WriteQrImageDescription(
+                    string.IsNullOrWhiteSpace(item.Pic.Description)
+                        ? description
+                        : item.Pic.Description);
+
+                SharedStatic.InstanceLogger.LogInformation(
+                    "[HgNews][SocialMedia] QR written: Index={Index}, Media='{Media}', QrPath='{QrPath}', QrDescription='{QrDescription}'",
+                    i, media, entry.QrPath ?? "<null>", entry.QrDescription ?? "<null>");
             }
         }
     }

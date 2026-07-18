@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -18,6 +18,8 @@ namespace Hi3Helper.Hypergryph.Core.Management;
 [GeneratedComClass]
 public partial class HgGameManager : GameManagerBase
 {
+    internal const string ManualVerifyMarkerFileName = ".collapse_verify_game";
+
     private readonly string _apiUrl;
     private readonly string _appCode;
     private readonly string _channel;
@@ -77,7 +79,7 @@ public partial class HgGameManager : GameManagerBase
         {
             if (!IsInstalled) return false;
 
-            return CurrentGameVersion != ApiGameVersion;
+            return IsManualVerifyRequested || CurrentGameVersion != ApiGameVersion;
         }
     }
 
@@ -85,6 +87,37 @@ public partial class HgGameManager : GameManagerBase
 
     protected override GameVersion ApiGameVersion { get; set; }
     protected override GameVersion ApiPreloadGameVersion { get; set; }
+
+    internal bool IsManualVerifyRequested
+    {
+        get
+        {
+            string? markerPath = ManualVerifyMarkerPath;
+            return markerPath != null && File.Exists(markerPath);
+        }
+    }
+
+    internal string? ManualVerifyMarkerPath => string.IsNullOrWhiteSpace(CurrentGameInstallPath)
+        ? null
+        : Path.Combine(CurrentGameInstallPath, ManualVerifyMarkerFileName);
+
+    internal void CompleteManualVerifyRequest()
+    {
+        string? markerPath = ManualVerifyMarkerPath;
+        if (markerPath == null || !File.Exists(markerPath)) return;
+
+        try
+        {
+            File.Delete(markerPath);
+            SharedStatic.InstanceLogger.LogInformation(
+                "[HgCore] Manual verification marker removed after successful repair.");
+        }
+        catch (Exception ex)
+        {
+            SharedStatic.InstanceLogger.LogWarning(
+                $"[HgCore] Failed to remove manual verification marker: {ex.Message}");
+        }
+    }
 
     internal List<HgPack>? GetGamePacks(GameInstallerKind kind)
     {
