@@ -19,7 +19,7 @@
         <PublishRepositoryUrl>true</PublishRepositoryUrl>
         <PackageTags>hdiff</PackageTags>
         <!--<GeneratePackageOnBuild>true</GeneratePackageOnBuild>-->
-        <Platforms>AnyCPU;x64;x86;ARM64</Platforms>
+        <Platforms>AnyCPU;x64</Platforms>
         <LangVersion>12</LangVersion>
     </PropertyGroup>
 

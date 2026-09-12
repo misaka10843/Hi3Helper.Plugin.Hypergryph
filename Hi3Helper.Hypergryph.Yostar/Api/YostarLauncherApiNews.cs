@@ -51,7 +51,7 @@ public partial class YostarLauncherApiNews : LauncherApiNewsBase
         {
             _apiClient = new YostarApiClient(_options);
             Task<YostarOperationsResource> operationsTask = _apiClient.GetOperationsResourceAsync(token);
-            Task<YostarSocialMediaResource> socialTask = _apiClient.GetSocialMediaResourceAsync(token);
+            Task<YostarSocialMediaResource?> socialTask = _apiClient.GetSocialMediaResourceAsync(token);
             await Task.WhenAll(operationsTask, socialTask).ConfigureAwait(false);
             _operationsResource = operationsTask.Result;
             _socialMediaResource = socialTask.Result;

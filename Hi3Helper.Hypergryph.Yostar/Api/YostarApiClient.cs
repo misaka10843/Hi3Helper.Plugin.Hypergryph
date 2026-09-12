@@ -44,11 +44,11 @@ internal sealed class YostarApiClient : IDisposable
         return EnsureSuccessful(response, "operations resource");
     }
 
-    public async Task<YostarSocialMediaResource> GetSocialMediaResourceAsync(CancellationToken token)
+    public async Task<YostarSocialMediaResource?> GetSocialMediaResourceAsync(CancellationToken token)
     {
         var response = await GetApiAsync("api/launcher/social/media/resource",
             YostarJsonContext.Default.YostarApiResponseYostarSocialMediaResource, token).ConfigureAwait(false);
-        return EnsureSuccessful(response, "social media resource");
+        return EnsureSuccessful(response, "social media resource", allowNullData: true);
     }
 
     public async Task<YostarGameConfig> GetGameConfigAsync(CancellationToken token)
@@ -125,12 +125,12 @@ internal sealed class YostarApiClient : IDisposable
         return $"{{\"head\":{head},\"sign\":\"{sign}\"}}";
     }
 
-    private static T EnsureSuccessful<T>(YostarApiResponse<T> response, string operation)
+    private static T EnsureSuccessful<T>(YostarApiResponse<T> response, string operation, bool allowNullData = false)
     {
-        if (response.Code != 200 || response.Data == null)
+        if (response.Code != 200 || (!allowNullData && response.Data == null))
             throw new HttpRequestException(
                 $"Yostar {operation} request failed with code {response.Code}: {response.Message}");
-        return response.Data;
+        return response.Data!;
     }
 
     private static HttpClient CreateHttpClient()

@@ -46,7 +46,10 @@ namespace SharpHDiffPatch.Core
             else return string.Empty;
         }
 
-        private static string GetLibArchitecturePrefix() => RuntimeInformation.OSArchitecture.ToString().ToLower();
+        // This project only ships x64 assemblies (Collapse Launcher is x64-only).
+        // Hardcode the architecture prefix so we never probe for win-arm64 or
+        // win-x86 native libraries that are not published.
+        private static string GetLibArchitecturePrefix() => "x64";
 
         private static IntPtr DllImportResolver(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
         {

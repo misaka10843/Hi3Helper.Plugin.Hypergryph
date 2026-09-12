@@ -268,7 +268,14 @@ public partial class YostarGameInstaller : GameInstallerBase
             reportProgress(-existingLength);
             existingLength = 0;
         }
-        if (existingLength == expectedSize) return;
+        if (existingLength == expectedSize)
+        {
+            // Zero-byte manifest entries need a placeholder temp file so the
+            // caller can compute CRC (empty file = "0") and move it into place.
+            if (expectedSize == 0 && !File.Exists(tempPath))
+                await using (FileStream empty = File.Create(tempPath)) { }
+            return;
+        }
 
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         if (existingLength > 0) request.Headers.Range = new RangeHeaderValue(existingLength, null);
