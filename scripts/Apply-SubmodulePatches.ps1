@@ -56,6 +56,25 @@ function Stop-WithError {
     exit 1
 }
 
+function Test-PatchApplied {
+    param([string] $SubmodulePath, [string] $Patch)
+
+    # Reverse-applying only succeeds when the patch is already in the tree.
+    return (Invoke-Git @('-C', $SubmodulePath, 'apply', '--reverse', '--check', '--whitespace=nowarn', '--', $Patch)).Code -eq 0
+}
+
+function Test-PatchApplicable {
+    param([string] $SubmodulePath, [string] $Patch)
+
+    return (Invoke-Git @('-C', $SubmodulePath, 'apply', '--check', '--whitespace=nowarn', '--', $Patch)).Code -eq 0
+}
+
+function Invoke-PatchApply {
+    param([string] $SubmodulePath, [string] $Patch)
+
+    return (Invoke-Git @('-C', $SubmodulePath, 'apply', '--whitespace=nowarn', '--', $Patch))
+}
+
 $patchesRoot = Join-Path $RepositoryRoot 'patches'
 if (-not (Test-Path -LiteralPath $patchesRoot)) {
     return
@@ -79,29 +98,53 @@ foreach ($submoduleDir in Get-ChildItem -LiteralPath $patchesRoot -Directory) {
         $patch = $patchFile.FullName
         $label = "patches/$submoduleName/$($patchFile.Name)"
 
-        # Reverse-applying only succeeds when the patch is already in the tree.
-        $reverse = Invoke-Git @('-C', $submodulePath, 'apply', '--reverse', '--check', '--whitespace=nowarn', '--', $patch)
-        if ($reverse.Code -eq 0) {
-            $presentCount++
-            continue
+        # A single build can reach the same submodule through more than one
+        # reference path and run this script twice, so a patch may be applied by
+        # a sibling process between the check and the apply. Retry rather than
+        # fail on that.
+        $outcome = 'failed'
+        $lastOutput = $null
+
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            if (Test-PatchApplied -SubmodulePath $submodulePath -Patch $patch) {
+                $outcome = 'present'
+                break
+            }
+
+            if (Test-PatchApplicable -SubmodulePath $submodulePath -Patch $patch) {
+                $result = Invoke-PatchApply -SubmodulePath $submodulePath -Patch $patch
+                if ($result.Code -eq 0) {
+                    $outcome = 'applied'
+                    break
+                }
+
+                $lastOutput = $result.Output
+            }
+            else {
+                $lastOutput = (Invoke-Git @('-C', $submodulePath, 'apply', '--check', '--whitespace=nowarn', '--', $patch)).Output
+            }
+
+            Start-Sleep -Milliseconds 250
         }
 
-        $forward = Invoke-Git @('-C', $submodulePath, 'apply', '--check', '--whitespace=nowarn', '--', $patch)
-        if ($forward.Code -ne 0) {
-            Stop-WithError @"
+        switch ($outcome) {
+            'present' {
+                $presentCount++
+            }
+
+            'applied' {
+                Write-Host "$label -> $submoduleName @ $head"
+                $appliedCount++
+            }
+
+            default {
+                Stop-WithError @"
 $label does not apply to $submoduleName (currently at $head).
-$($forward.Output -join [Environment]::NewLine)
+$($lastOutput -join [Environment]::NewLine)
 If upstream has fixed this, delete the patch file. Otherwise rebase it onto the new commit.
 "@
+            }
         }
-
-        $result = Invoke-Git @('-C', $submodulePath, 'apply', '--whitespace=nowarn', '--', $patch)
-        if ($result.Code -ne 0) {
-            Stop-WithError "$label failed to apply to $submoduleName.`n$($result.Output -join [Environment]::NewLine)"
-        }
-
-        Write-Host "$label -> $submoduleName @ $head"
-        $appliedCount++
     }
 }
 
