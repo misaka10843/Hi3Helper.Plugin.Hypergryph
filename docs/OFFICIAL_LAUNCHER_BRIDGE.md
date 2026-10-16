@@ -1,6 +1,6 @@
 # 官方启动器父进程桥
 
-> 状态：代码已实现并通过编译。自动化链路（查接口、下载、校验、只取 `Games.exe`、验签、挂起父进程、清理）已在开发机上跑通；游戏客户端自己是否放行，还没在装了终末地的机器上验证过。
+> 状态：代码已实现并通过编译。接口、下载、校验、只取 `Games.exe`、验签、挂起父进程、清理这条链路已实测跑通，国服客户端日志里出现过 `Parent process check success`。但存在一个未解阻塞：`Games.exe` 清单要求管理员权限，非提权宿主创建不了它，见 6.5。
 > 适用范围：仅《明日方舟：终末地》，中国大陆服与国际服。
 > 最后更新：2026-10-16
 
@@ -9,7 +9,7 @@
 | 范围 | 是否接入 | 说明 |
 | --- | --- | --- |
 | 终末地 中国大陆（`launcher.hypergryph.com`） | 接入 | 父进程校验与组件下载都已实测 |
-| 终末地 国际服（`launcher.gryphline.com`，启动器叫 Gryphlink） | 部分接入 | 桥本身一样，但下载分支走不通，启动器文件名也没验证，见第 6 节 |
+| 终末地 国际服（`launcher.gryphline.com`，启动器叫 Gryphlink） | 接入 | appcode 与文件名已确认，下载链路已实测；受 6.5 的提权问题影响 |
 | 明日方舟 国服 / B 服 | 不接入 | 没有这个问题，代码保持原样 |
 | 明日方舟 国际服 / 日服（Yostar） | 不接入 | 没有这个问题，代码保持原样 |
 
@@ -312,13 +312,15 @@ prompt.Dispose();                                        // PostMessage(WM_CLOSE
 
 1. 文件存在。
 2. `WinVerifyTrust`（`WINTRUST_ACTION_GENERIC_VERIFY_V2`）通过。
-3. 签名主体包含 `Hypergryph` 或 `GRYPHLINE`。
+3. 签名主体包含 `Hypergryph`、`GRYPHLINE` 或 `GRYPH FRONTIER` 之一。
 
 三项都过就算有效，不比对版本号。这套检查同时充当更新失效的兜底：官方更新启动器之后，本地文件如果失效，检查自然不通过，会自动走一次重新获取，不需要任何轮询或版本比对。
 
-按签名主体匹配而不是证书指纹，是因为硬编码指纹会在证书轮换后失效。实测鹰角代码签名证书是 `CN="Shanghai Hypergryph Network Technology Co., Ltd."`，由 `DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1` 签发，SHA-1 指纹 `2B366F397E64A9494A553B70004E8CA1AAE02B9D`，有效期到 2027-08-17。
+按签名主体匹配而不是证书指纹，是因为硬编码指纹会在证书轮换后失效。两个区域的主体不同，所以关键字有三个：国服是 `CN="Shanghai Hypergryph Network Technology Co., Ltd."`（命中 `Hypergryph`），国际服是 `CN=GRYPH FRONTIER PTE. LTD.`（命中 `GRYPH FRONTIER`，见 6.3）。国服证书由 `DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1` 签发，SHA-1 指纹 `2B366F397E64A9494A553B70004E8CA1AAE02B9D`，有效期到 2027-08-17。
 
-验签用的是 `WinVerifyTrust`，参数上 `dwUIChoice = 2`（静默）、`dwProvFlags = 0x100`（`WTD_CACHE_ONLY_URL_RETRIEVAL`，不联网查吊销，免得卡网）。签名主体靠 `X509Certificate.CreateFromSignedFile` 读。这个 API 在 .NET 里被标了 `SYSLIB0057` 废弃，但 `X509CertificateLoader` 没有等价能力，它只能读 PEM / DER 证书文件和 PKCS#12，没法从已签名的 PE 里取出签名者证书，所以保留调用并抑制该警告。
+顺带更正一处旧注释：`dwProvFlags` 写的是 `0x100`，之前在这里标成 `WTD_CACHE_ONLY_URL_RETRIEVAL` 是错的——那个常量实际是 `0x1000`，`0x100` 是 `WTD_SAFER_FLAG`。两种取值在本机实测都返回 `0`，所以不影响结果，但描述已改正。
+
+验签用的是 `WinVerifyTrust`，参数上 `dwUIChoice = 2`（静默）、`dwProvFlags = 0x100`（`WTD_SAFER_FLAG`）。签名主体靠 `X509Certificate.CreateFromSignedFile` 读。这个 API 在 .NET 里被标了 `SYSLIB0057` 废弃，但 `X509CertificateLoader` 没有等价能力，它只能读 PEM / DER 证书文件和 PKCS#12，没法从已签名的 PE 里取出签名者证书，所以保留调用并抑制该警告。
 
 ## 4. 挂起父进程桥怎么搭
 
@@ -335,70 +337,134 @@ prompt.Dispose();                                        // PostMessage(WM_CLOSE
 
 全程只用 Windows 正规进程 API。不修改游戏 DLL，不 hook 游戏进程，不关闭任何检查，不伪造父进程。
 
+**第 1 步有个前提：调用方必须是提权进程。** `Games.exe` 的清单要求管理员，非提权进程调
+`CreateProcessW` 会直接拿到 `ERROR_ELEVATION_REQUIRED`（740），桥建不起来。详见 6.5。
+
 ## 5. 残留挂起进程的清理
 
 挂起父进程由 `Dispose()` 终止。如果宿主进程被强杀（比如任务管理器结束 Collapse），它会残留。所以每次启动前，`OfficialLauncherProvider` 会终止**可执行文件路径位于组件目录下**的同名进程。
 
 作用域刻意收窄到组件目录：选取分支里用户指定的官方安装目录不受影响，不会误杀用户真正在用的启动器。
 
-## 6. 国际服：还没验证的部分
+## 6. 国际服（Gryphlink）
 
-国际服（Gryphline，启动器叫 Gryphlink）跟插件其它部分一样接入，但有三件事没验证过。
+### 6.1 appcode 已定位：`TiaytKBUIEdoEwRT`
 
-### 6.1 组件下载走不通
+拿到国际服启动器整包后，对包内 4 个可执行文件跑跟国服同一条检索：
 
-| 主机 | `appcode` | `launcher_appcode` | 结果 |
-| --- | --- | --- | --- |
-| `launcher.hypergryph.com` | `abYeZZ16BPluCFyT`（启动器） | `6LL0KJuqHBVz33WK`（游戏） | 200 |
-| `launcher.hypergryph.com` | `6LL0KJuqHBVz33WK` | `abYeZZ16BPluCFyT` | 404 `LAUNCHER_RECORD_NOT_FOUND` |
-| `launcher.gryphline.com` | `YDUTE5gscDZ229CW`（游戏） | `YDUTE5gscDZ229CW` | 404 `LAUNCHER_RECORD_NOT_FOUND` |
-| `launcher.gryphline.com` | `abYeZZ16BPluCFyT` | `YDUTE5gscDZ229CW` | 400 `INVALID_PARAM` |
-| `launcher.gryphline.com` | `YDUTE5gscDZ229CW` | `abYeZZ16BPluCFyT` | 404 `LAUNCHER_RECORD_NOT_FOUND` |
-| `launcher.gryphline.com` | `6LL0KJuqHBVz33WK` | `abYeZZ16BPluCFyT` | 400 `INVALID_PARAM` |
+```bash
+grep -aoE 'publish-launcher-[0-9]+.[A-Za-z0-9]{16}' Games.exe Launcher.exe Updater.exe Patch.exe
+# -> publish-launcher-184\TiaytKBUIEdoEwRT      （四个文件一致）
+```
 
-国际服主机上 `YDUTE5gscDZ229CW` 是合法 appcode（返回 404 而不是 400），但它下面没有启动器记录，说明国际服启动器是另一个 appcode。国服启动器的 appcode 在国际服主机被判 400，没注册。国际服 `get_latest_game` 的完整响应里也没有任何启动器相关字段（`launcher_action = 0`、`state = 0`）。
+`TiaytKBUIEdoEwRT` 在 `Games.exe` 里出现 142 次，形态全是
+`D:\work\publish-launcher-184\TiaytKBUIEdoEwRT\1.6.0.1607\11\HG\Kernel\...` 这样的
+`__FILE__` 编译路径常量。国服是 `publish-launcher-184\abYeZZ16BPluCFyT\1.6.0.1604\11\HG\...`，
+两边的 `184` 相同，再次印证同一套启动器代码库按区域分别构建。
 
-需要说明的是，当前 `EndfieldGlobalPreSetConfig` 和 `EndfieldPlayPreSetConfig` 里的 `ExLauncherAppCode` 填的是游戏 appcode `YDUTE5gscDZ229CW`，跟 `ExAppCode` 一样。国服和 B 服填的是真正的启动器 appcode `abYeZZ16BPluCFyT`。拿游戏 appcode 去查必然 404，所以国际服现在走不到下载分支，只能落到「手动选取已安装的官方启动器」那条路。拿到正确的 appcode 之后，改这一个常量就行。
+### 6.2 接口实测：`channel` / `sub_channel` 必须是 6/6
 
-### 6.2 已试过但没成功的途径
+用 `TiaytKBUIEdoEwRT` 打 `launcher.gryphline.com`，扫 channel × sub_channel：
 
-**抓官方下载页拿不到。** `https://endfield.gryphline.com/en-us/download` 返回 200（576 KB），但渲染的是首页。下载区块的 `downloader_contentContainer` 在 SSR 里是空的，链接由客户端注入。把初始 HTML 引用的 29 个 chunk 加 3 个 app-router chunk（约 2.1 MB）全下下来检索，没有 `static/chunks/` 形式的映射表（`webpack-*.js` 只有 1932 字节，是空壳），没有 `downloader_*` / `downloadTitle` / `pc-oversea` 这些类名，也没有任何 `/api/*download*` 路径或下载域名。下载组件在按需加载的 chunk 里，文件名带内容哈希，从 HTML 推不出来。
+| channel | sub_channel | 结果 |
+| --- | --- | --- |
+| 6 | 1 | 200 |
+| 6 | 6 | 200 |
+| 6 | 2 / 100 / 802 / 900 | 404 |
+| 1 / 2 / 3 / 7 / 10 | 1 / 2 / 6 / 100 / 802 / 900 | 404 |
 
-**抓网络请求做不了。** `agent-browser`（Chromium 155.0.8059.84）装上了，但守护进程从没建立会话，连 `https://example.com` 的 `open` 都挂起 2.5 分钟。本沙箱起不了 Chromium，抓不了包。
+两个 200 返回同一个包：
 
-**站点 API 没找到。** `web-api.gryphline.com` 出现在 web SDK 的引用里（`https://web-static.hg-cdn.com/gl_web_sdk/2.1.4/gl-web-sdk.min.js`），但没有公开的下载配置端点。
+```json
+{"action":1,"version":"1.6.0","request_version":"",
+ "zip_package_url":"https://launcher.hg-cdn.com/TiaytKBUIEdoEwRT/launcher/6/6/official/1.6.0_s2nHVJbcPQrJnjb8/2BI9Aq6G/GRYPHLINK_v1.6.0.1612_6_6_official.zip",
+ "md5":"d4575a6643792fae65ffcff58beb704c","package_size":"117679901","total_size":"375902887"}
+```
 
-**从国服二进制里穷举过，没有。** 对国服启动器整包的 5 个可执行文件（`Games.exe` / `Launcher.exe` / `Updater.exe` / `Patch.exe` / `Uninstall.exe`，合计约 45 MB）做 appcode 形态扫描，判据是「被 NUL 边界包裹的独立 UTF-16 字符串、恰好 16 位、同时含大写小写和数字」。全库只有 1 个命中：`uiCaUeGDB2htwXSv`。拿它反查 `get_latest_game`，返回的是《明日方舟》中国台湾版的包地址，跟终末地启动器无关。
+国际服启动器 CDN 是 `launcher.hg-cdn.com`（国服是 `launcher-sign.hycdn.cn`），而且**不带 `auth_key`**，
+可以直接下载。整包实测：117,679,901 字节、9.3 s、MD5 `d4575a6643792fae65ffcff58beb704c` 与接口一致；
+包内 247 个条目，`Games.exe` 在根目录，17,998,728 字节。
 
-原因也清楚了：国服启动器自己的 appcode 同样不以配置值形式存在，它只作为 `__FILE__` 编译路径常量出现在启动器 exe 里，打包时注入，各区域构建各不相同。所以国际服 appcode 只能从 Gryphlink 那份构建里拿。
+`EndfieldGlobalPreSetConfig` 的 `ExChannel` / `ExSubChannel` 本来就是 `6` / `6`，
+只需要把 `ExLauncherAppCode` 从游戏 appcode 改成 `TiaytKBUIEdoEwRT`。
 
-### 6.3 后续怎么拿
+`EndfieldPlayPreSetConfig`（Google Play 通道，`sub_channel = 802`）**改不动**：
+`get_latest_launcher` 在 6/802 返回 404（`get_latest_game` 正常，包名带 `_googleplay`），
+说明该通道没有独立的启动器记录。它会落到「拿不到下载包，只能手动选取」那条路。
 
-1. 在装有 Gryphlink 的机器上抓它的自更新请求，直接读出 `appcode`。
-2. 对 Gryphlink 安装包做同样的二进制检索。国服就是这么定位到 `abYeZZ16BPluCFyT` 的，它作为 `__FILE__` 编译路径常量硬编码在启动器 exe 里：
+### 6.3 验签主体跟国服不一样
 
-   ```bash
-   grep -aoE 'publish-launcher-[0-9]+.[A-Za-z0-9]{16}' Games.exe Launcher.exe Updater.exe
-   # -> publish-launcher-184\abYeZZ16BPluCFyT
-   ```
+`TrustedPublishers` 原先只列 `Hypergryph` / `GRYPHLINE`，那是按国服实测定的：
 
-   分隔符是反斜杠，不是点号。写成 `publish-launcher-[0-9]+\.[A-Za-z0-9]{16}` 会 0 命中，实测对比过。包内没有 `.pdb`，这个字符串来自 exe 自身。
+| 区域 | 证书主体 | 命中的关键字 |
+| --- | --- | --- |
+| 国服 | `CN="Shanghai Hypergryph Network Technology Co., Ltd.", O=..., S=shanghai, C=CN` | `Hypergryph` |
+| 国际服 | `CN=GRYPH FRONTIER PTE. LTD., O=GRYPH FRONTIER PTE. LTD., L=Singapore, C=SG` | `GRYPH FRONTIER` |
 
-3. 或者从官方下载页的 JS 渲染网络请求里提安装包 URL。URL 路径段 `/<launcher_appcode>/launcher/<channel>/<sub_channel>/official/` 会直接暴露 appcode，跟国服的 URL 结构一致。
+国际服主体里既没有 `Hypergryph` 也没有 `GRYPHLINE`，`Contains` 全部落空，
+`IsTrustedPublisher` 返回 false，启动器会被当成「非官方组件」拒掉。已把 `GRYPH FRONTIER` 加进列表。
+两边 `WinVerifyTrust` 都返回 `0`（链完整、带时间戳），签发者都是
+`DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1`。
 
-### 6.4 启动器文件名可能不叫 Games.exe
+### 6.4 启动器文件名确认就是 `Games.exe`
 
-现在 `OfficialLauncherBridge` 和 `OfficialLauncherProvider` 把启动器可执行名硬编码成 `Games.exe`，下载分支按这个名字从 zip 里提取，选取分支也按这个名字在所选位置查找。
+Gryphlink 包内主程序就叫 `Games.exe`（17,998,728 字节），跟国服同名。
+`OfficialLauncherBridge` / `OfficialLauncherProvider` 里硬编码的 `Games.exe` 对国际服同样成立。
+`Launcher.exe`（`asInvoker`）是另一个组件，不是被校验的那个。
+国际服注册的协议 scheme 是 `gryphlinklauncher`（UTF-16 字符串），已在 `ProtocolPrefixes` 里。
 
-但国服启动器的配置模板里，`main_exe_name` 是一个配置项（`\res\config | endfield | abYeZZ16BPluCFyT | cn | 1.6.0 | Hypergryph | Games.exe | ... | _Launcher_`），启动器主程序名由配置决定，不保证各区域相同。目前拿到的外部旁证（`moraroy/NonSteamLaunchersDecky` 的 `gryphlink_scanner.py`）只给出 `C:\Program Files\GRYPHLINK\games\EndField Game\Endfield.exe`，能确定启动器根目录是 `C:\Program Files\GRYPHLINK\`，但主程序的文件名没确认。
+### 6.5 未解阻塞：`Games.exe` 要求管理员，非提权进程创建不了
 
-要验证的话，在装了 Gryphlink 的机器上列一下 `C:\Program Files\GRYPHLINK\*.exe`，再跟该机的 `parentNames` 或 `OneChannelLC.log` 对一下。
+**这比 appcode 更硬，而且国服国际服都一样。**
 
-顺带一提，国服启动器二进制里同时存在 `hypergryphlauncher` / `gryphlinklauncher`、`Hypergryph` / `GRYPHLINK` 这些 UTF-16 字符串，说明是同一套启动器代码库按 `HgOrg` 区分区域，只是分别构建。所以国际服的文件名很可能仍是 `Games.exe`，但这只是推断。
+两个区域的 `Games.exe` 清单里都是：
 
-### 6.5 国际服客户端是否也做父进程校验
+```xml
+<requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+```
 
-`OneChannelLC.dll` 由游戏客户端自带，它的 `checkItems[]` 配置来自服务端。国际服客户端是否加载这个模块、`parentNames` 取什么值，都没验证。在验证之前，不该假定国际服同样需要这座桥。
+对照：`Launcher.exe` 是 `asInvoker`，`Updater.exe` / `Patch.exe` 是 `requireAdministrator`。
+
+在 Medium 完整性、`TokenElevation = 0` 的普通用户会话里实测 `CreateProcessW`：
+
+| 目标 | flags | 结果 |
+| --- | --- | --- |
+| `notepad.exe` | `CREATE_SUSPENDED \| CREATE_NO_WINDOW` | True |
+| 国服 `Games.exe` | `CREATE_SUSPENDED \| CREATE_NO_WINDOW` | **False, err 740** |
+| 国际服 `Games.exe` | `CREATE_SUSPENDED \| CREATE_NO_WINDOW` | **False, err 740** |
+| 国际服 `Games.exe` | `CREATE_SUSPENDED` | False, err 740 |
+| 国际服 `Games.exe` | `CREATE_NO_WINDOW` | False, err 740 |
+
+`740` = `ERROR_ELEVATION_REQUIRED`。所以 `OfficialLauncherBridge.TryCreateSuspended`
+在非提权宿主里必然失败，`TryCreate` 对所有候选都返回 false，桥永远建不起来。
+
+之前没发现，是因为所有端到端测试都在 Administrator 会话里跑。真机 `OneChannelLC.log` 里两种结果并存：
+
+```text
+[10-15 17:28] Not found matched name
+              errorCode:10100, filePath: ...\collapselauncher.exe     <- Collapse 直接拉起，被拒
+[10-15 17:35] Parent process check success:27132
+              filePath: d:\misaka10843\downloads\1.6.0\games.exe       <- 父进程是启动器，通过
+```
+
+顺带确认了 `parentNames` 接受 `Games.exe`，且按完整路径取文件名匹配。
+
+> 诊断坑：`Marshal.GetLastWin32Error()` 必须**紧接**在 P/Invoke 之后读。中间插一句
+> `Console.WriteLine` 会把 last-error 冲成 0，看起来像「返回 false 但错误码是 0」。
+
+可选处理方向（尚未选定，需要产品决策）：
+
+| 方案 | 代价 |
+| --- | --- |
+| 要求 Collapse 以管理员运行，检测到 740 时给出明确提示 | 实现最简单，但把提权强加给整个启动器 |
+| `ShellExecuteEx(runas)` 拉起提权小助手，由它创建挂起 `Games.exe` 再挂载游戏 | 每次启动弹一次 UAC；游戏会以提权令牌运行 |
+| `ShellExecuteEx(runas)` 直接拉 `Games.exe`，再立刻 `NtSuspendProcess` | 不需要独立组件，但返回的句柄不一定有 `PROCESS_SUSPEND_RESUME`，且有竞态 |
+
+### 6.6 国际服客户端是否也做父进程校验
+
+`OneChannelLC.dll` 由游戏客户端自带，`checkItems[]` 来自服务端。国际服客户端是否加载这个模块、
+`parentNames` 取什么值，仍未验证。国服实测 `parentNames` 接受 `Games.exe`（见 6.5 的日志），
+国际服大概率相同，但没有证据。
 
 ## 7. 待办
 
@@ -411,11 +477,13 @@ prompt.Dispose();                                        // PostMessage(WM_CLOSE
 | T5 | 接入 `Hi3Helper.Plugin.Endfield/Exports.GameLaunch.cs` | 已实现，Arknights / Yostar 未改动 |
 | T6 | 选取分支 | 已实现。文件选择框改用 `GetOpenFileNameW`，过滤器只列 `Games.exe`；选中的路径写进 `picked_launcher.txt`，之后不再询问 |
 | T7 | 真机端到端：下载 → 解压 → 取文件 → 桥启动 → `OneChannelLC.log` 出现 `Parent process check success` | 自动化链路已实测通过（含第三方交叉验证），游戏内校验尚未实测 |
-| T8 | 取得国际服（Gryphlink）启动器 appcode | 未解，见 6.1 至 6.3 |
-| T9 | 验证国际服启动器可执行文件名 | 未验证，见 6.4 |
-| T10 | 验证国际服客户端是否也执行父进程校验 | 未验证，见 6.5 |
+| T8 | 取得国际服（Gryphlink）启动器 appcode | 已解：`TiaytKBUIEdoEwRT`，`channel`/`sub_channel` = 6/6，实测 200 且包 MD5 一致，见 6.1 / 6.2 |
+| T9 | 验证国际服启动器可执行文件名 | 已解：也叫 `Games.exe`，见 6.4 |
+| T10 | 验证国际服客户端是否也执行父进程校验 | 未验证，见 6.6 |
 | T11 | 下载进度窗口 + 就绪/失败弹窗 + 中日英三语 i18n | 已实现。47 项断言全通过，窗口渲染经截图人工确认 |
 | T12 | 下载完成后不自动启动，交给用户再点一次 | 已实现，见 2 节流程说明 |
+| T13 | **非提权宿主下 `Games.exe` 创建失败（`ERROR_ELEVATION_REQUIRED` 740）** | **未解，阻塞整个桥，见 6.5** |
+| T14 | 国际服验签主体与国服不同（`GRYPH FRONTIER`） | 已修：加入 `TrustedPublishers`，见 6.3 |
 
 T7 里已经跑通的部分：
 

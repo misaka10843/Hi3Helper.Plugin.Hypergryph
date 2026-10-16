@@ -21,7 +21,7 @@ public partial class EndfieldGlobalPresetConfig : PluginPresetConfigBase
     private const string ExWebApiUrl = "https://launcher.gryphline.com/api/proxy/web/batch_proxy";
 
     private const string ExAppCode = "YDUTE5gscDZ229CW";
-    private const string ExLauncherAppCode = "YDUTE5gscDZ229CW";
+    private const string ExLauncherAppCode = "TiaytKBUIEdoEwRT";
     private const string ExChannel = "6";
     private const string ExSubChannel = "6";
     private const string ExSeq = "3";

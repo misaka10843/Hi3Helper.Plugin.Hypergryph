@@ -27,8 +27,11 @@ public sealed partial class OfficialLauncherBridge : IDisposable
     private static readonly Guid WinTrustActionGenericVerifyV2 =
         new("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
 
-    private static readonly string[] TrustedPublishers  = ["Hypergryph", "GRYPHLINE"];
-    private static readonly string[] ProtocolPrefixes   = ["hypergryphlauncher", "gryphlinelauncher"];
+    private static readonly string[] TrustedPublishers =
+        ["Hypergryph", "GRYPHLINE", "GRYPH FRONTIER"];
+
+    private static readonly string[] ProtocolPrefixes =
+        ["hypergryphlauncher", "gryphlinelauncher"];
 
     private nint _suspendedProcess;
     private nint _suspendedThread;
