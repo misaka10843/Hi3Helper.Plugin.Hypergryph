@@ -24,6 +24,26 @@ Do not create a separate Global or Japan plugin. Do not make Yostar managers
 inherit from Hypergryph managers. Both implementations derive independently
 from the abstractions in `Hi3Helper.Plugin.Core`.
 
+## Submodule patches
+
+The nested repositories are pinned to plain upstream commits, so a fix we need
+on top of one of them cannot be a commit of our own: a gitlink can only name a
+commit the remote already has, and CI fetches the submodule straight from that
+remote. Local fixes therefore live in `patches/<submodule>/` as `.patch` files.
+
+- `patches/Hi3Helper.Plugin.Core/0001-social-media-entry-flags.patch` — the
+  `LauncherSocialMediaEntry` setters clear the opposite flag with
+  `Flags |= ~X`, which sets every unrelated bit instead of clearing one. An
+  entry written with an icon buffer and a QR path ends up with `IsPath` and
+  `IsDataBuffer` both set, and the media panel renders the buffer as a path.
+
+`Directory.Build.targets` runs `scripts/Apply-SubmodulePatches.ps1` before the
+patched submodule compiles, so a plain `dotnet build` and CI use the same
+sources. The script is idempotent, and it fails the build when a patch no
+longer applies. That failure is the intended behaviour after a submodule bump:
+rebase the patch onto the new commit, or delete it if upstream has fixed the
+bug. Do not work around it by committing a local submodule commit.
+
 ## Arknights Presets
 
 Preset registration is in `Hi3Helper.Plugin.Arknights/Plugin.cs`.

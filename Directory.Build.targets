@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    A submodule that carries a local patch stays pinned to a plain upstream
+    commit, so the fix cannot be a commit of our own. The patches live under
+    patches/<submodule>/ and are applied by scripts/Apply-SubmodulePatches.ps1.
+
+    Applying them from here rather than from the workflow keeps a plain
+    `dotnet build` and CI on the same sources. Add a submodule to
+    PatchedSubmodules when it gains a patch directory.
+  -->
+  <PropertyGroup>
+    <PatchedSubmodules>Hi3Helper.Plugin.Core</PatchedSubmodules>
+  </PropertyGroup>
+
+  <Target Name="ApplySubmodulePatches"
+          BeforeTargets="BeforeCompile"
+          Condition="'$(ApplySubmodulePatches)' != 'false' and '$(PatchedSubmodules)' != '' and $(PatchedSubmodules.Contains('$(MSBuildProjectName)'))">
+    <Exec Command="powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)scripts\Apply-SubmodulePatches.ps1&quot;" />
+  </Target>
+
+</Project>

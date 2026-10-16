@@ -1,0 +1,70 @@
+From 3bdf8d4a96a64a6d3b9b79a9f31020280d1a5f0a Mon Sep 17 00:00:00 2001
+From: misaka10843 <misaka10843@outlook.jp>
+Date: Fri, 9 Oct 2026 23:20:49 +0800
+Subject: [PATCH] fix: clear mutually exclusive media entry flags
+
+---
+ Management/Api/LauncherSocialMediaEntry.cs | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/Management/Api/LauncherSocialMediaEntry.cs b/Management/Api/LauncherSocialMediaEntry.cs
+index b8ea93c..89a2240 100644
+--- a/Management/Api/LauncherSocialMediaEntry.cs
++++ b/Management/Api/LauncherSocialMediaEntry.cs
+@@ -123,7 +123,7 @@ public unsafe struct LauncherSocialMediaEntry() : IDisposable
+     public void WriteIcon(string? path)
+     {
+         _iconPath = FreeAndWriteFromString(_iconPath, path);
+-        Flags |= ~LauncherSocialMediaEntryFlag.IconIsDataBuffer;
++        Flags &= ~LauncherSocialMediaEntryFlag.IconIsDataBuffer;
+         Flags |= LauncherSocialMediaEntryFlag.IconIsPath;
+     }
+ 
+@@ -135,7 +135,7 @@ public unsafe struct LauncherSocialMediaEntry() : IDisposable
+     public void WriteIcon(ReadOnlySpan<byte> buffer)
+     {
+         _iconPath = FreeAndWriteFromByte(_iconPath, buffer);
+-        Flags |= ~LauncherSocialMediaEntryFlag.IconIsPath;
++        Flags &= ~LauncherSocialMediaEntryFlag.IconIsPath;
+         Flags |= LauncherSocialMediaEntryFlag.IconIsDataBuffer;
+     }
+ 
+@@ -147,7 +147,7 @@ public unsafe struct LauncherSocialMediaEntry() : IDisposable
+     public void WriteIconHover(string? path)
+     {
+         _iconHoverPath = FreeAndWriteFromString(_iconHoverPath, path);
+-        Flags |= ~LauncherSocialMediaEntryFlag.IconHoverIsDataBuffer;
++        Flags &= ~LauncherSocialMediaEntryFlag.IconHoverIsDataBuffer;
+         Flags |= LauncherSocialMediaEntryFlag.IconHoverIsPath;
+     }
+ 
+@@ -159,7 +159,7 @@ public unsafe struct LauncherSocialMediaEntry() : IDisposable
+     public void WriteIconHover(ReadOnlySpan<byte> buffer)
+     {
+         _iconHoverPath = FreeAndWriteFromByte(_iconHoverPath, buffer);
+-        Flags |= ~LauncherSocialMediaEntryFlag.IconHoverIsPath;
++        Flags &= ~LauncherSocialMediaEntryFlag.IconHoverIsPath;
+         Flags |= LauncherSocialMediaEntryFlag.IconHoverIsDataBuffer;
+     }
+ 
+@@ -171,7 +171,7 @@ public unsafe struct LauncherSocialMediaEntry() : IDisposable
+     public void WriteQrImage(string? path)
+     {
+         _qrPath = FreeAndWriteFromString(_qrPath, path);
+-        Flags |= ~LauncherSocialMediaEntryFlag.QrImageIsDataBuffer;
++        Flags &= ~LauncherSocialMediaEntryFlag.QrImageIsDataBuffer;
+         Flags |= LauncherSocialMediaEntryFlag.QrImageIsPath;
+     }
+ 
+@@ -183,7 +183,7 @@ public unsafe struct LauncherSocialMediaEntry() : IDisposable
+     public void WriteQrImage(ReadOnlySpan<byte> buffer)
+     {
+         _qrPath = FreeAndWriteFromByte(_qrPath, buffer);
+-        Flags |= ~LauncherSocialMediaEntryFlag.QrImageIsPath;
++        Flags &= ~LauncherSocialMediaEntryFlag.QrImageIsPath;
+         Flags |= LauncherSocialMediaEntryFlag.QrImageIsDataBuffer;
+     }
+ 
+-- 
+2.55.0.windows.3
+
