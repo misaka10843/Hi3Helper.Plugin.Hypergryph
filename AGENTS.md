@@ -44,6 +44,29 @@ longer applies. That failure is the intended behaviour after a submodule bump:
 rebase the patch onto the new commit, or delete it if upstream has fixed the
 bug. Do not work around it by committing a local submodule commit.
 
+## Endfield game launch
+
+From client 1.6.3 the game refuses to start unless its **direct** parent process
+is a Hypergryph-signed `Games.exe`. That parent is never resumed; it exists only
+to satisfy the check.
+
+`Exports.GameLaunch.cs` stages one of the game's own signed executables
+(`PlatformProcess.exe`, `UnityCrashHandler64.exe`, `Endfield.exe`) into
+`%TEMP%\Hi3Helper\ParentBridge\Games.exe`, creates it suspended, then starts the
+game with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`. Nothing is written into the
+game directory, and every failure falls back to a plain direct start.
+
+`OfficialLauncherBridge` / `OfficialLauncherProvider` implement the older route
+(locate or download the real launcher) and stay compiled but unused:
+`AcquireOfficialLauncher` in `Exports.GameLaunch.cs` is `false`. Do not delete
+them, and do not flip the flag back without confirming the decoy still passes.
+
+Both routes share `ParentProcessBridge`, which owns suspension, signature
+verification, the parent attribute and teardown. A subclass only answers where
+the parent executable comes from.
+
+Details: `docs/DECOY_PARENT_BRIDGE.md`, `docs/OFFICIAL_LAUNCHER_BRIDGE.md`.
+
 ## Arknights Presets
 
 Preset registration is in `Hi3Helper.Plugin.Arknights/Plugin.cs`.
