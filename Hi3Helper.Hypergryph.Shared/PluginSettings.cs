@@ -49,11 +49,6 @@ public static class PluginSettings
     public static void SetValue(IPluginPresetConfig preset, string key, string value, bool endfield)
     {
         if (!Drafts.TryGetValue(preset, out var draft)) throw new InvalidOperationException(Get(SettingsText.ReopenSettings));
-        if ((key.StartsWith("display.", StringComparison.Ordinal) || key.StartsWith("graphics.", StringComparison.Ordinal)) && draft.Display != null && OperatingSystem.IsWindows())
-        {
-            draft.Display.Set(key, value);
-            return;
-        }
         switch (key)
         {
             case "manualVerificationRequested":
@@ -63,7 +58,10 @@ public static class PluginSettings
             case "parentExecutablePath" when endfield:
                 draft.Options.ParentExecutablePath = value.Trim();
                 break;
-            default: throw new ArgumentException(Format(SettingsText.UnknownSetting, key));
+            default:
+                if (draft.Display == null || !OperatingSystem.IsWindows()) throw new ArgumentException(Format(SettingsText.UnknownSetting, key));
+                draft.Display.Set(key, value);
+                break;
         }
     }
 

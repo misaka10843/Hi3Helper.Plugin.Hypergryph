@@ -124,8 +124,11 @@ its own strings. Keep entry labels short and place shared help on sections,
 because the current host renders entries in narrow columns without layout hints.
 
 Game-specific preference implementations belong in their game plugin; Shared
-contains only common configuration, localization and ABI adapters. Endfield CN
-audio volumes use eight bytes labelled REG_DWORD, returned as Int64 by .NET.
+contains only common configuration, localization and ABI adapters. Game
+settings keys must be routed through `IGamePreferences.Set` after handling
+plugin-owned keys; do not whitelist display/graphics prefixes. Interface smoke
+tests must submit every rendered game setting, including audio and language.
+Endfield CN audio volumes use eight bytes labelled REG_DWORD, returned as Int64 by .NET.
 Preserve that storage shape when writing and rolling back. Do not reinterpret
 them as ordinary DWORD integers or silently convert them to REG_QWORD.
 Only expose recorded enum options; UI ordering alone does not establish values.
