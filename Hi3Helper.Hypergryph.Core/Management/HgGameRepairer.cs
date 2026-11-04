@@ -54,9 +54,7 @@ public class HgGameRepairer
         var baseUrl = _manager.GameResourceBaseUrl;
         if (string.IsNullOrEmpty(baseUrl))
         {
-            SharedStatic.InstanceLogger.LogWarning(
-                "[HgRepairer] GameResourceBaseUrl is missing. Skipping repair.");
-            return;
+            throw new InvalidOperationException("The API did not provide a game resource URL for verification.");
         }
 
         InstallProgress progress = default;
@@ -96,6 +94,7 @@ public class HgGameRepairer
             {
                 encryptedManifest = await File.ReadAllBytesAsync(localManifestPath, token);
             }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
                 SharedStatic.InstanceLogger.LogWarning(
@@ -116,15 +115,14 @@ public class HgGameRepairer
             catch (Exception ex)
             {
                 SharedStatic.InstanceLogger.LogError($"[HgRepairer] Failed to download game_files: {ex.Message}");
-                return;
+                throw;
             }
         }
 
         var decryptedManifest = HgCrypto.DecryptBytesToString(encryptedManifest);
         if (string.IsNullOrEmpty(decryptedManifest))
         {
-            SharedStatic.InstanceLogger.LogError("[HgRepairer] Failed to decrypt game_files. Wrong AES Key?");
-            return;
+            throw new InvalidDataException("Cannot decrypt the game_files verification manifest.");
         }
 
         var manifestNodes = new List<HgManifestNode>();
@@ -151,7 +149,7 @@ public class HgGameRepairer
             }
         }
 
-        if (manifestNodes.Count == 0) return;
+        if (manifestNodes.Count == 0) throw new InvalidDataException("The verification manifest contains no game files.");
 
         var totalVerifyBytes = manifestNodes.Sum(n => n.Size);
         SharedStatic.InstanceLogger.LogInformation(

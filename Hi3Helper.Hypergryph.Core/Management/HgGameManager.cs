@@ -140,7 +140,7 @@ public partial class HgGameManager : GameManagerBase
             });
     }
 
-    internal async Task<int> InitAsyncInner(bool forceInit = false, CancellationToken token = default)
+    internal async Task<int> InitAsyncInner(bool forceInit = false, CancellationToken token = default, bool requestFullPackage = false)
     {
         if (!forceInit && IsInitialized) return 0;
 
@@ -189,7 +189,7 @@ public partial class HgGameManager : GameManagerBase
                         LauncherAppCode = _launcherAppCode,
                         Channel = _channel,
                         SubChannel = _subChannel,
-                        Version = requestVersion
+                        Version = requestFullPackage ? "" : requestVersion
                     }
                 }
             }
@@ -224,10 +224,12 @@ public partial class HgGameManager : GameManagerBase
             else
                 ApiPreloadGameVersion = GameVersion.Empty;
 
-            if (_latestGameInfo.Pkg != null) GameResourceBaseUrl = _latestGameInfo.Pkg.FilePath;
+            if (requestFullPackage || _latestGameInfo.Pkg != null)
+                GameResourceBaseUrl = _latestGameInfo.Pkg?.FilePath;
 
             IsInitialized = true;
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             SharedStatic.InstanceLogger.LogError($"[HgCore] API request failed: {ex}");

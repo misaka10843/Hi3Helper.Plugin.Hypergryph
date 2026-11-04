@@ -95,6 +95,11 @@ accepting it into per-manager memory. Reading the settings page does not
 consume it. Status/size queries preserve the in-memory request. Starting the
 operation consumes it; failure/cancellation/restart never requeues it.
 Suppress preload presentation while a manual verification is pending.
+The host can invoke `StartInstallAsync` for its update button. Both install and
+update entrypoints must route pending verification through the same operation;
+size queries for either kind must leave the request pending. Verification must
+request full resource metadata even when the installed version is current, and
+must report missing resource URLs or invalid manifests as failures.
 
 Both plugins implement Core v0.1.6 settings-page exports. Edits are drafts until
 Apply, isolated by preset and game path. Game settings write to the client's

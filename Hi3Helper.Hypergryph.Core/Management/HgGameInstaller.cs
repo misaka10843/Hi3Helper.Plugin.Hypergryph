@@ -50,7 +50,7 @@ public partial class HgGameInstaller : GameInstallerBase
         await InitAsync(token).ConfigureAwait(false);
 
         if (GameManager is not HgGameManager manager) return 0L;
-        if (gameInstallerKind == GameInstallerKind.Update && manager.IsManualVerifyRequested) return 0L;
+        if (gameInstallerKind != GameInstallerKind.Preload && manager.IsManualVerifyRequested) return 0L;
 
         var packs = manager.GetGamePacks(gameInstallerKind);
         if (packs == null) return 0L;
@@ -67,7 +67,7 @@ public partial class HgGameInstaller : GameInstallerBase
     {
         await InitAsync(token).ConfigureAwait(false);
         if (GameManager is not HgGameManager manager) return 0L;
-        if (gameInstallerKind == GameInstallerKind.Update && manager.IsManualVerifyRequested) return 0L;
+        if (gameInstallerKind != GameInstallerKind.Preload && manager.IsManualVerifyRequested) return 0L;
 
         var packs = manager.GetGamePacks(gameInstallerKind);
         if (packs == null) return 0L;
@@ -104,10 +104,14 @@ public partial class HgGameInstaller : GameInstallerBase
     protected override Task StartInstallAsyncInner(InstallProgressDelegate? progressDelegate,
         InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
     {
-        return StartInstallCoreAsync(GameInstallerKind.Install, progressDelegate, progressStateDelegate, token);
+        return RunInstallOrVerificationAsync(GameInstallerKind.Install, progressDelegate, progressStateDelegate, token);
     }
 
-    protected override async Task StartUpdateAsyncInner(InstallProgressDelegate? progressDelegate,
+    protected override Task StartUpdateAsyncInner(InstallProgressDelegate? progressDelegate,
+        InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
+        => RunInstallOrVerificationAsync(GameInstallerKind.Update, progressDelegate, progressStateDelegate, token);
+
+    private async Task RunInstallOrVerificationAsync(GameInstallerKind kind, InstallProgressDelegate? progressDelegate,
         InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
     {
         if (GameManager is not HgGameManager manager)
@@ -119,10 +123,11 @@ public partial class HgGameInstaller : GameInstallerBase
         {
             if (!verify)
             {
-                await StartInstallCoreAsync(GameInstallerKind.Update, progressDelegate, progressStateDelegate, token).ConfigureAwait(false);
+                await StartInstallCoreAsync(kind, progressDelegate, progressStateDelegate, token).ConfigureAwait(false);
                 return;
             }
-            await InitAsync(token).ConfigureAwait(false);
+            if (await manager.InitAsyncInner(true, token, requestFullPackage: true).ConfigureAwait(false) != 0)
+                throw new InvalidOperationException("Cannot obtain game resource information for verification.");
             GameManager.GetGamePath(out string? installPath);
             if (string.IsNullOrWhiteSpace(installPath) || !Directory.Exists(installPath))
                 throw new DirectoryNotFoundException("The game installation directory is missing.");
