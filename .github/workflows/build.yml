@@ -1,5 +1,9 @@
 name: Build Plugins
 
+permissions:
+  contents: read
+  pull-requests: read
+
 on:
   push:
     branches: [ "main" ]
@@ -19,7 +23,6 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
 jobs:
   prepare:
-    if: contains(github.event.head_commit.message, '[ci]') || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
@@ -34,44 +37,46 @@ jobs:
           filters: |
             core:
               - 'Hi3Helper.Hypergryph.Core/**'
-              - '.github/workflows/**'
+              - 'Hi3Helper.Hypergryph.Shared/**'
+              - 'Hi3Helper.Plugin.Core'
+              - 'Hi3Helper.Plugin.Core/**'
+              - 'SevenZipExtractor'
+              - 'SevenZipExtractor/**'
+              - 'SharpHDiffPatch.Core/**'
+              - '.github/**'
+              - '*.props'
+              - '*.targets'
+              - '*.sln'
+              - 'global.json'
             endfield:
               - 'Hi3Helper.Plugin.Endfield/**'
             arknights:
               - 'Hi3Helper.Plugin.Arknights/**'
+              - 'Hi3Helper.Hypergryph.Yostar/**'
 
       - name: Determine Build Matrix
         id: set-matrix
+        env:
+          CORE: ${{ steps.filter.outputs.core }}
+          ENDFIELD: ${{ steps.filter.outputs.endfield }}
+          ARKNIGHTS: ${{ steps.filter.outputs.arknights }}
         run: |
-          # retrieve the commit message and pull request title, then normalize both to lowercase to facilitate pattern matching.
-          MSG=$(echo "${{ github.event.head_commit.message }} ${{ github.event.pull_request.title }}" | tr '[:upper:]' '[:lower:]')
-          
-          # if modified Core，all plugins builds
-          if [[ "${{ steps.filter.outputs.core }}" == "true" ]] || [[ "$MSG" == *"(core)"* ]]; then
-            echo "Core modified, build all plugins"
-            echo 'matrix=["Hi3Helper.Plugin.Endfield", "Hi3Helper.Plugin.Arknights"]' >> $GITHUB_OUTPUT
-            exit 0
+          result='[]'
+          if [[ "$CORE" == true || "$ENDFIELD" == true ]]; then
+            result=$(jq -c '. + ["Hi3Helper.Plugin.Endfield"]' <<< "$result")
           fi
-          
-          # if only modified Endfield
-          if [[ "${{ steps.filter.outputs.endfield }}" == "true" ]] || [[ "$MSG" == *"(endfield)"* ]]; then
-            echo "only build Endfield。"
-            echo 'matrix=["Hi3Helper.Plugin.Endfield"]' >> $GITHUB_OUTPUT
-            exit 0
+          if [[ "$CORE" == true || "$ARKNIGHTS" == true ]]; then
+            result=$(jq -c '. + ["Hi3Helper.Plugin.Arknights"]' <<< "$result")
           fi
-          
-          # if only modified Arknights
-          if [[ "${{ steps.filter.outputs.arknights }}" == "true" ]] || [[ "$MSG" == *"(arknights)"* ]]; then
-            echo "only build Arknights"
-            echo 'matrix=["Hi3Helper.Plugin.Arknights"]' >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          echo "All build"
-          echo 'matrix=["Hi3Helper.Plugin.Endfield", "Hi3Helper.Plugin.Arknights"]' >> $GITHUB_OUTPUT
+          echo "matrix=$result" >> "$GITHUB_OUTPUT"
+
+      - name: Test release tooling
+        shell: pwsh
+        run: ./.github/scripts/Test-PluginRelease.ps1
 
   build:
     needs: prepare
+    if: needs.prepare.outputs.matrix != '[]'
     runs-on: windows-latest
     strategy:
       fail-fast: false

@@ -4,215 +4,192 @@ on:
   workflow_dispatch:
     inputs:
       plugin_selection:
-        description: 'Plugin to release'
-        required: true
-        default: 'all'
+        description: Plugins to release (provide a version for each selected plugin)
         type: choice
-        options: [ all, Hi3Helper.Plugin.Endfield, Hi3Helper.Plugin.Arknights ]
+        default: all
+        options: [all, Hi3Helper.Plugin.Endfield, Hi3Helper.Plugin.Arknights]
       endfield_version:
-        description: 'Endfield version (e.g. 0.1.2)'
-        default: ''
+        description: Endfield version
         type: string
       arknights_version:
-        description: 'Arknights version (e.g. 0.1.0)'
-        default: ''
+        description: Arknights version
         type: string
       publish_profile:
-        description: 'Publish profile to use'
-        required: true
+        description: Publish profile
         type: choice
-        options:
-          - ReleaseNoReflectionPublish-O1
-          - ReleaseNoReflectionPublish-O2
-          - ReleasePublish-O1
-          - ReleasePublish-O2
-          - DebugPublish
-          - DebugNoReflectionPublish
         default: ReleaseNoReflectionPublish-O1
+        options: [ReleaseNoReflectionPublish-O1, ReleaseNoReflectionPublish-O2, ReleasePublish-O1, ReleasePublish-O2, DebugPublish, DebugNoReflectionPublish]
 
 permissions:
-  id-token: write
-  contents: write
-  attestations: write
-  pull-requests: write
+  contents: read
+
+concurrency:
+  group: plugin-release
+  cancel-in-progress: false
 
 jobs:
-  prepare_release:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - id: set-matrix
-        env:
-          END_VER: ${{ github.event.inputs.endfield_version }}
-          ARK_VER: ${{ github.event.inputs.arknights_version }}
-          SELECT: ${{ github.event.inputs.plugin_selection }}
-        run: |
-          if [[ "$SELECT" != "all" && "$SELECT" != "Hi3Helper.Plugin.Endfield" && "$SELECT" != "Hi3Helper.Plugin.Arknights" ]]; then
-            echo "Unsupported plugin selection: $SELECT"
-            exit 1
-          fi
-
-          for version in "$END_VER" "$ARK_VER"; do
-            if [[ -n "$version" && ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-              echo "Invalid plugin version: $version"
-              exit 1
-            fi
-          done
-          
-          RESULT="[]"
-          if [[ ("$SELECT" == "all" || "$SELECT" == "Hi3Helper.Plugin.Endfield") && -n "$END_VER" ]]; then
-            RESULT=$(echo $RESULT | jq -c '. += [{"name": "Hi3Helper.Plugin.Endfield", "short": "Endfield", "version": "'$END_VER'"}]')
-          fi
-          if [[ ("$SELECT" == "all" || "$SELECT" == "Hi3Helper.Plugin.Arknights") && -n "$ARK_VER" ]]; then
-            RESULT=$(echo $RESULT | jq -c '. += [{"name": "Hi3Helper.Plugin.Arknights", "short": "Arknights", "version": "'$ARK_VER'"}]')
-          fi
-          
-          echo "matrix=$RESULT" >> $GITHUB_OUTPUT
-
-  update_repo_version:
-    needs: prepare_release
-    if: needs.prepare_release.outputs.matrix != '[]'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
-
-      - name: Bump Version in .csproj
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Validate release plan and tags
+        id: plan
+        shell: pwsh
         env:
-          END_VER: ${{ github.event.inputs.endfield_version }}
-          ARK_VER: ${{ github.event.inputs.arknights_version }}
-          SELECT: ${{ github.event.inputs.plugin_selection }}
+          SELECTION: ${{ inputs.plugin_selection }}
+          END_VERSION: ${{ inputs.endfield_version }}
+          ARK_VERSION: ${{ inputs.arknights_version }}
         run: |
-          UPDATED=false
-          
-          if [[ ("$SELECT" == "all" || "$SELECT" == "Hi3Helper.Plugin.Endfield") && -n "$END_VER" ]]; then
-            sed -i -E "s/<Version>.*<\/Version>/<Version>${END_VER}<\/Version>/" Hi3Helper.Plugin.Endfield/Hi3Helper.Plugin.Endfield.csproj
-            UPDATED=true
-          fi
-          
-          if [[ ("$SELECT" == "all" || "$SELECT" == "Hi3Helper.Plugin.Arknights") && -n "$ARK_VER" ]]; then
-            sed -i -E "s/<Version>.*<\/Version>/<Version>${ARK_VER}<\/Version>/" Hi3Helper.Plugin.Arknights/Hi3Helper.Plugin.Arknights.csproj
-            UPDATED=true
-          fi
-          
-          echo "UPDATED=$UPDATED" >> $GITHUB_ENV
+          $plan = & ./.github/scripts/Invoke-PluginRelease.ps1 -Action Plan -Selection $env:SELECTION -EndfieldVersion $env:END_VERSION -ArknightsVersion $env:ARK_VERSION
+          foreach ($item in @($plan | ConvertFrom-Json)) {
+            & ./.github/scripts/Invoke-PluginRelease.ps1 -Action Notes -Short $item.short -Version $item.version -Destination "$($item.short)-notes.md"
+          }
 
-      - name: Commit and Push changes
-        if: env.UPDATED == 'true'
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add Hi3Helper.Plugin.Endfield/Hi3Helper.Plugin.Endfield.csproj Hi3Helper.Plugin.Arknights/Hi3Helper.Plugin.Arknights.csproj
-          git diff-index --quiet HEAD || (git commit -m "chore(release): bump plugin versions [skip ci]" && git push)
-  release:
-    needs: [ prepare_release, update_repo_version ]
-    if: needs.prepare_release.outputs.matrix != '[]'
+  build:
+    needs: prepare
     runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
-        item: ${{ fromJson(needs.prepare_release.outputs.matrix) }}
-    
+        item: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          submodules: true
-          ref: ${{ github.ref }}
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+          submodules: recursive
+          ref: ${{ github.sha }}
+      - uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '10.0.x'
-
-      - name: Restore dependencies
-        run: dotnet restore ${{ matrix.item.name }}/${{ matrix.item.name }}.csproj
-
-      - name: Build project
-        run: dotnet build --configuration Release ${{ matrix.item.name }}/${{ matrix.item.name }}.csproj --no-restore /p:Version=${{ matrix.item.version }}
-
-      - name: Publish with selected profile
-        run: dotnet publish ${{ matrix.item.name }}/${{ matrix.item.name }}.csproj --configuration Release --runtime win-x64 /p:PublishProfile=${{ github.event.inputs.publish_profile }} /p:Version=${{ matrix.item.version }} -o ./publish_output
-
-      - name: Generate build provenance
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: './publish_output/**'
-
-      # --- STEP 1: Zip Clean Files (Before Indexer runs) ---
-      # We save this OUTSIDE the publish folder so Indexer doesn't process it.
-      #- name: Create Clean Release Zip
-      #  run: Compress-Archive -Path ./publish/* -DestinationPath ./Endfield_v${{ inputs.version }}.zip
-
-      # --- STEP 2: Indexer (Modifies publish folder) ---
-      # This generates the .br files and the Launcher-specific zip inside ./publish
-      - name: Run Indexer
-        run: .\Indexer.exe .\publish_output
-
-      # --- STEP 4: Generate Changelog ---
-      - name: Generate Changelog
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: cliff.toml
-          args: --unreleased --tag ${{ matrix.item.short }}@v${{ matrix.item.version }} --strip header
-        id: git-cliff
-
-      # --- STEP 5: Create GitHub Release ---
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ matrix.item.short }}@v${{ matrix.item.version }}
-          name: ${{ matrix.item.short }} v${{ matrix.item.version }}
-          body: ${{ steps.git-cliff.outputs.content }}
-          files: ./publish_output/*.zip
+          dotnet-version: 10.0.x
+      - name: Publish plugin
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT: ${{ matrix.item.name }}
+          VERSION: ${{ matrix.item.version }}
+          PROFILE: ${{ inputs.publish_profile }}
+        run: |
+          dotnet publish "$env:PROJECT/$env:PROJECT.csproj" -c Release -r win-x64 "-p:PublishProfile=$env:PROFILE" "-p:Version=$env:VERSION" -o publish_output
+          if ($LASTEXITCODE -ne 0) { throw 'Plugin publish failed.' }
+      - name: Retain debug symbols outside Git
+        uses: actions/upload-artifact@v4
+        with:
+          name: symbols-${{ matrix.item.short }}
+          path: publish_output/**/*.pdb
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Index runtime files
+        shell: pwsh
+        run: |
+          Get-ChildItem -LiteralPath ./publish_output -Recurse -File -Filter '*.pdb' | Remove-Item -Force
+          & ./Indexer.exe ./publish_output
+          if ($LASTEXITCODE -ne 0) { throw 'Indexer failed.' }
+      - name: Stage and validate release payload
+        shell: pwsh
+        env:
+          SHORT: ${{ matrix.item.short }}
+          VERSION: ${{ matrix.item.version }}
+        run: |
+          & ./.github/scripts/Invoke-PluginRelease.ps1 -Action Stage -Short $env:SHORT -Source ./publish_output -Destination "./bundle/$env:SHORT"
+          & ./.github/scripts/Invoke-PluginRelease.ps1 -Action Notes -Short $env:SHORT -Version $env:VERSION -Destination ./bundle/notes.md
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: './bundle/**'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.item.short }}
+          path: ./bundle/
+          if-no-files-found: error
 
-      - name: Checkout target repo
+  publish:
+    needs: [prepare, build]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      PLAN: ${{ needs.prepare.outputs.matrix }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: ./release-artifacts
+      - name: Checkout release repository once
         uses: actions/checkout@v6
         with:
           repository: misaka10843/CollapsePlugin-ReleaseRepo
           path: ./target-repo
           token: ${{ secrets.RELEASE_REPO_TOKEN }}
-          fetch-depth: 0
-
-      - name: Copy files to target repo
+      - name: Validate and synchronize all selected plugins
+        shell: pwsh
         run: |
-          $shortName = "${{ matrix.item.short }}"
-          $targetPath = "./target-repo/$shortName"
-          
-          New-Item -ItemType Directory -Force -Path $targetPath/build
-          New-Item -ItemType Directory -Force -Path $targetPath/Lib
-
-          Copy-Item -Path ./publish_output/*.dll -Destination $targetPath/ -ErrorAction SilentlyContinue
-          Copy-Item -Path ./publish_output/*.pdb -Destination $targetPath/ -ErrorAction SilentlyContinue
-          Copy-Item -Path ./publish_output/manifest.json -Destination $targetPath/ -ErrorAction SilentlyContinue
-          Copy-Item -Path "./publish_output/Lib/*" -Destination "$targetPath/Lib/" -Recurse -Force -ErrorAction SilentlyContinue
-          Copy-Item -Path ./publish_output/*.zip -Destination $targetPath/build/
-
-      - name: Create Pull Request in Release Repo
+          & ./.github/scripts/Invoke-PluginRelease.ps1 -Action Collect -Source ./release-artifacts -Destination ./target-repo -Plan $env:PLAN
+          $items = @($env:PLAN | ConvertFrom-Json)
+          $notes = foreach ($item in $items) { Get-Content -LiteralPath "./release-artifacts/release-$($item.short)/notes.md" -Raw }
+          [IO.File]::WriteAllText((Join-Path $PWD 'RELEASE_NOTES.md'), ($notes -join "`n`n"))
+          "RELEASE_TITLE=Release plugins: $(($items | ForEach-Object { "$($_.short) v$($_.version)" }) -join ', ')" >> $env:GITHUB_ENV
+      - name: Publish releases from the exact build commit
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          foreach ($item in @($env:PLAN | ConvertFrom-Json)) {
+            $tag = "$($item.short)@v$($item.version)"
+            $notes = "./release-artifacts/release-$($item.short)/notes.md"
+            gh release view $tag *> $null
+            if ($LASTEXITCODE -eq 0) {
+              gh release edit $tag --notes-file $notes
+            } else {
+              gh release create $tag --target $env:SOURCE_SHA --title "$($item.short) v$($item.version)" --notes-file $notes
+            }
+            if ($LASTEXITCODE -ne 0) { throw "Cannot publish $tag" }
+            $files = @(Get-ChildItem -LiteralPath "./release-artifacts/release-$($item.short)/$($item.short)/build" -Filter '*.zip' -File | ForEach-Object FullName)
+            gh release upload $tag @files --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Cannot upload $tag assets" }
+          }
+      - name: Create one pull request for the complete release
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.RELEASE_REPO_TOKEN }}
           path: ./target-repo
-          branch: ${{ matrix.item.short }}-plugin-release-${{ matrix.item.version }}
+          branch: plugins-release-${{ github.run_id }}
           base: main
-          title: 'Release ${{ matrix.item.short }} Plugin v${{ matrix.item.version }}'
-          body: |
-            Automated release of ${{ matrix.item.short }} Plugin v${{ matrix.item.version }}
-            
-            ${{ steps.git-cliff.outputs.content }}
-            
-            Files updated:
-            - ${{ matrix.item.short }}.dll
-            - ${{ matrix.item.short }}.pdb
-            - manifest.json
-            - SevenZipExtractor.pdb
-            - Lib/*
-            - build/*.zip
-          commit-message: 'Release ${{ matrix.item.short }} Plugin v${{ matrix.item.version }}'
+          title: ${{ env.RELEASE_TITLE }}
+          body-path: ./RELEASE_NOTES.md
+          commit-message: 'feat (release): update selected plugin packages'
           delete-branch: false
+      - name: Write back versions after successful distribution
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_BRANCH: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if ($env:REF_TYPE -ne 'branch') { Write-Host 'Tag build: no version writeback.'; exit 0 }
+          git fetch origin $env:SOURCE_BRANCH
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect source branch.' }
+          if ((git rev-parse FETCH_HEAD) -ne $env:SOURCE_SHA) { Write-Host 'Source branch advanced; skip version writeback.'; exit 0 }
+          & ./.github/scripts/Invoke-PluginRelease.ps1 -Action Bump -Plan $env:PLAN
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          foreach ($item in @($env:PLAN | ConvertFrom-Json)) { git add -- "$($item.name)/$($item.name).csproj" }
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 1) {
+            git commit -m 'feat (release): bump plugin versions [skip ci]'
+            if ($LASTEXITCODE -ne 0) { throw 'Version commit failed.' }
+            git push origin "HEAD:refs/heads/$env:SOURCE_BRANCH"
+            if ($LASTEXITCODE -ne 0) { throw 'Version push failed; no force push attempted.' }
+          } elseif ($LASTEXITCODE -ne 0) { throw 'Cannot inspect version changes.' }

@@ -45,6 +45,17 @@ notes outside tracked source, for example under `.git/local-notes`.
 Update existing technical documentation only where needed to describe changed
 behavior; do not create extra documentation as a routine implementation step.
 
+## Release automation
+
+Build every selected plugin at the dispatch SHA, then validate and aggregate
+all payloads before creating one release-repository PR per workflow run. Keep
+PDBs as separate Actions artifacts; remove them before Indexer generates the
+runtime manifest and ZIP. Never silently ignore missing release files.
+Generate notes from the previous tag for the same plugin through the build SHA,
+accept both `feat(scope):` and `feat (scope):` subjects, and omit automatic
+version-only commits. Do not move existing stable tags to another commit.
+Run `.github/scripts/Test-PluginRelease.ps1` and actionlint after workflow edits.
+
 Do not create a separate Global or Japan plugin. Do not make Yostar managers
 inherit from Hypergryph managers. Both implementations derive independently
 from the abstractions in `Hi3Helper.Plugin.Core`.

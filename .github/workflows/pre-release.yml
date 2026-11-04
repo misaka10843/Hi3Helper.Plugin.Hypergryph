@@ -4,355 +4,157 @@ on:
   workflow_dispatch:
     inputs:
       plugin_selection:
-        description: 'Plugin to include in pre-release'
-        required: true
-        default: 'all'
+        description: Plugins to include (provide selected versions)
         type: choice
-        options:
-          - all
-          - Hi3Helper.Plugin.Endfield
-          - Hi3Helper.Plugin.Arknights
-
+        default: all
+        options: [all, Hi3Helper.Plugin.Endfield, Hi3Helper.Plugin.Arknights]
       endfield_version:
-        description: 'Endfield pre-release version (e.g. 0.1.2-pre.1)'
-        default: ''
+        description: Endfield version (e.g. 1.3.1-pre.1)
         type: string
-
       arknights_version:
-        description: 'Arknights pre-release version (e.g. 0.1.0-pre.1)'
-        default: ''
+        description: Arknights version (e.g. 1.3.1-pre.1)
         type: string
-
       publish_profile:
-        description: 'Publish profile to use'
-        required: true
+        description: Publish profile
         type: choice
-        options:
-          - ReleaseNoReflectionPublish-O1
-          - ReleaseNoReflectionPublish-O2
-          - ReleasePublish-O1
-          - ReleasePublish-O2
-          - DebugPublish
-          - DebugNoReflectionPublish
         default: ReleaseNoReflectionPublish-O1
-
+        options: [ReleaseNoReflectionPublish-O1, ReleaseNoReflectionPublish-O2, ReleasePublish-O1, ReleasePublish-O2, DebugPublish, DebugNoReflectionPublish]
       release_tag:
-        description: 'Rolling pre-release tag name (reused on every run)'
-        default: 'pre-release'
+        description: Rolling tag (pre-release or pre-release-suffix)
         type: string
+        default: pre-release
 
 permissions:
-  id-token: write
-  contents: write
-  attestations: write
+  contents: read
 
-# Only one rolling pre-release run at a time.
-# A newer run cancels the older one so the delete-and-recreate
-# step never races with itself.
 concurrency:
-  group: pre-release
-  cancel-in-progress: true
+  group: plugin-prerelease
+  cancel-in-progress: false
 
 jobs:
-  prepare_release:
+  prepare:
     runs-on: ubuntu-latest
-
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - name: Prepare matrix
-        id: set-matrix
-        shell: bash
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - id: plan
+        name: Validate release plan
+        shell: pwsh
         env:
-          END_VER: ${{ github.event.inputs.endfield_version }}
-          ARK_VER: ${{ github.event.inputs.arknights_version }}
-          SELECT: ${{ github.event.inputs.plugin_selection }}
+          SELECTION: ${{ inputs.plugin_selection }}
+          END_VERSION: ${{ inputs.endfield_version }}
+          ARK_VERSION: ${{ inputs.arknights_version }}
+          ROLLING_TAG: ${{ inputs.release_tag }}
         run: |
-          if [[ "$SELECT" != "all" && "$SELECT" != "Hi3Helper.Plugin.Endfield" && "$SELECT" != "Hi3Helper.Plugin.Arknights" ]]; then
-            echo "Unsupported plugin selection: $SELECT"
-            exit 1
-          fi
-
-          for version in "$END_VER" "$ARK_VER"; do
-            if [[ -n "$version" && ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-              echo "Invalid plugin version: $version"
-              exit 1
-            fi
-          done
-
-          RESULT="[]"
-
-          if [[ ("$SELECT" == "all" || "$SELECT" == "Hi3Helper.Plugin.Endfield") && -n "$END_VER" ]]; then
-            RESULT=$(echo "$RESULT" | jq -c \
-              --arg version "$END_VER" \
-              '. += [{
-                "name": "Hi3Helper.Plugin.Endfield",
-                "short": "Endfield",
-                "version": $version
-              }]')
-          fi
-
-          if [[ ("$SELECT" == "all" || "$SELECT" == "Hi3Helper.Plugin.Arknights") && -n "$ARK_VER" ]]; then
-            RESULT=$(echo "$RESULT" | jq -c \
-              --arg version "$ARK_VER" \
-              '. += [{
-                "name": "Hi3Helper.Plugin.Arknights",
-                "short": "Arknights",
-                "version": $version
-              }]')
-          fi
-
-          echo "matrix=$RESULT" >> "$GITHUB_OUTPUT"
-
-          echo "Generated matrix:"
-          echo "$RESULT" | jq .
+          if ($env:ROLLING_TAG -notmatch '^pre-release([._-][A-Za-z0-9._-]+)?$') { throw 'Use a dedicated pre-release tag.' }
+          & ./.github/scripts/Invoke-PluginRelease.ps1 -Action Plan -Selection $env:SELECTION -EndfieldVersion $env:END_VERSION -ArknightsVersion $env:ARK_VERSION
 
   build:
-    needs: prepare_release
-    if: needs.prepare_release.outputs.matrix != '[]'
-
+    needs: prepare
     runs-on: windows-latest
-
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
-        item: ${{ fromJson(needs.prepare_release.outputs.matrix) }}
-
+        item: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          submodules: true
-          ref: ${{ github.ref }}
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+          submodules: recursive
+          ref: ${{ github.sha }}
+      - uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '10.0.x'
-
-      - name: Restore dependencies
-        run: dotnet restore "${{ matrix.item.name }}/${{ matrix.item.name }}.csproj"
-
-      - name: Build project
-        run: >
-          dotnet build
-          --configuration Release
-          "${{ matrix.item.name }}/${{ matrix.item.name }}.csproj"
-          --no-restore
-          /p:Version=${{ matrix.item.version }}
-
-      - name: Publish with selected profile
-        run: >
-          dotnet publish
-          "${{ matrix.item.name }}/${{ matrix.item.name }}.csproj"
-          --configuration Release
-          --runtime win-x64
-          /p:PublishProfile=${{ github.event.inputs.publish_profile }}
-          /p:Version=${{ matrix.item.version }}
-          -o ./publish_output
-
-      - name: Verify publish output
-        shell: powershell
+          dotnet-version: 10.0.x
+      - name: Publish plugin
+        shell: pwsh
+        env:
+          PROJECT: ${{ matrix.item.name }}
+          VERSION: ${{ matrix.item.version }}
+          PROFILE: ${{ inputs.publish_profile }}
         run: |
-          Write-Host "===== publish_output BEFORE Indexer ====="
-
-          if (!(Test-Path "./publish_output")) {
-            throw "publish_output does not exist."
-          }
-
-          Get-ChildItem "./publish_output" -Recurse |
-            Select-Object FullName, Length |
-            Format-Table -AutoSize
-
-      - name: Generate build provenance
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: './publish_output/**'
-
-      # Indexer generates the .br files and the plugin zip inside ./publish_output
-      - name: Run Indexer
-        shell: powershell
-        run: |
-          if (!(Test-Path "./Indexer.exe")) {
-            throw "Indexer.exe was not found in repository root."
-          }
-
-          & ".\Indexer.exe" ".\publish_output"
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Indexer.exe failed with exit code $LASTEXITCODE"
-          }
-
-      - name: Verify generated ZIP
-        shell: powershell
-        run: |
-          Write-Host "===== publish_output AFTER Indexer ====="
-
-          if (!(Test-Path "./publish_output")) {
-            throw "publish_output does not exist after Indexer."
-          }
-
-          $zips = @(Get-ChildItem "./publish_output" -Filter "*.zip" -File)
-
-          if ($zips.Count -eq 0) {
-            Write-Host "===== Full publish_output contents ====="
-
-            Get-ChildItem "./publish_output" -Recurse |
-              Select-Object FullName, Length |
-              Format-Table -AutoSize
-
-            throw "Indexer did not generate any .zip file."
-          }
-
-          Write-Host "Generated ZIP files:"
-          $zips | ForEach-Object {
-            Write-Host " - $($_.FullName) [$($_.Length) bytes]"
-          }
-
-      - name: Generate Changelog
-        uses: orhun/git-cliff-action@v4
-        id: git-cliff
-        with:
-          config: cliff.toml
-          args: --unreleased --tag ${{ matrix.item.short }}@v${{ matrix.item.version }} --strip header
-
-      - name: Save Changelog
-        shell: bash
-        run: |
-          cat > "./changelog_${{ matrix.item.short }}.md" <<'EOF'
-          ${{ steps.git-cliff.outputs.content }}
-          EOF
-
-      - name: Upload build artifacts
+          dotnet publish "$env:PROJECT/$env:PROJECT.csproj" -c Release -r win-x64 "-p:PublishProfile=$env:PROFILE" "-p:Version=$env:VERSION" -o publish_output
+          if ($LASTEXITCODE -ne 0) { throw 'Plugin publish failed.' }
+      - name: Retain debug symbols separately
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.item.short }}-pre
-          if-no-files-found: error
-          path: |
-            ./publish_output/*.zip
-            ./changelog_${{ matrix.item.short }}.md
-
-  create_prerelease:
-    needs: build
-    if: always() && needs.build.result == 'success'
-
-    runs-on: ubuntu-latest
-
-    steps:
-      # Do NOT use merge-multiple here.
-      # Keep each artifact in its own directory, then collect the
-      # required files explicitly below.
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./artifacts
-
-      - name: Inspect downloaded artifacts
-        shell: bash
+          name: symbols-${{ matrix.item.short }}
+          path: publish_output/**/*.pdb
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Index runtime files
+        shell: pwsh
         run: |
-          echo "===== Downloaded artifacts ====="
-
-          if [ ! -d "./artifacts" ]; then
-            echo "ERROR: ./artifacts does not exist."
-            exit 1
-          fi
-
-          find ./artifacts -type f -printf '%p (%s bytes)\n' | sort
-
-      - name: Collect release files
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p ./release_files
-
-          echo "===== Collecting ZIP files ====="
-
-          find ./artifacts \
-            -type f \
-            -name "*.zip" \
-            -exec cp {} ./release_files/ \;
-
-          echo "===== Collecting changelogs ====="
-
-          find ./artifacts \
-            -type f \
-            -name "changelog_*.md" \
-            -exec cp {} ./release_files/ \;
-
-          echo "===== Release files ====="
-          find ./release_files \
-            -maxdepth 1 \
-            -type f \
-            -printf '%f (%s bytes)\n' |
-            sort
-
-          ZIP_COUNT=$(find ./release_files -maxdepth 1 -type f -name "*.zip" | wc -l)
-
-          if [ "$ZIP_COUNT" -eq 0 ]; then
-            echo "ERROR: No ZIP files were found in downloaded artifacts."
-            exit 1
-          fi
-
-          echo "Found $ZIP_COUNT ZIP file(s)."
-
-      - name: Combine changelogs
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          shopt -s nullglob
-
-          CHANGELOG_FILES=(./release_files/changelog_*.md)
-
-          if [ "${#CHANGELOG_FILES[@]}" -eq 0 ]; then
-            echo "Pre-release build." > ./RELEASE_NOTES.md
-          else
-            cat "${CHANGELOG_FILES[@]}" > ./RELEASE_NOTES.md
-          fi
-
-          echo "===== RELEASE_NOTES.md ====="
-          cat ./RELEASE_NOTES.md
-
-      # Rolling pre-release:
-      # delete the previous release and its tag, then recreate it.
-      - name: Delete existing rolling pre-release
+          Get-ChildItem -LiteralPath ./publish_output -Recurse -File -Filter '*.pdb' | Remove-Item -Force
+          & ./Indexer.exe ./publish_output
+          if ($LASTEXITCODE -ne 0) { throw 'Indexer failed.' }
+      - name: Stage payload and changelog
+        shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+          SHORT: ${{ matrix.item.short }}
+          VERSION: ${{ matrix.item.version }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            echo "Invalid release tag: $RELEASE_TAG"
-            exit 1
-          fi
-
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release delete "$RELEASE_TAG" --yes --cleanup-tag
-          else
-            echo "No existing release found for tag '$RELEASE_TAG'."
-          fi
-
-      - name: Create pre-release
-        uses: softprops/action-gh-release@v2
+          & ./.github/scripts/Invoke-PluginRelease.ps1 -Action Stage -Short $env:SHORT -Source ./publish_output -Destination "./bundle/$env:SHORT"
+          & ./.github/scripts/Invoke-PluginRelease.ps1 -Action Notes -Short $env:SHORT -Version $env:VERSION -Destination ./bundle/notes.md
+      - uses: actions/attest-build-provenance@v3
         with:
-          tag_name: ${{ github.event.inputs.release_tag }}
+          subject-path: './bundle/**'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.item.short }}
+          path: ./bundle/
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      PLAN: ${{ needs.prepare.outputs.matrix }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: ./release-artifacts
+      - name: Combine selected changelogs
+        shell: pwsh
+        run: |
+          $notes = foreach ($item in @($env:PLAN | ConvertFrom-Json)) { Get-Content -LiteralPath "./release-artifacts/release-$($item.short)/notes.md" -Raw }
+          [IO.File]::WriteAllText((Join-Path $PWD 'RELEASE_NOTES.md'), ($notes -join "`n`n"))
+      - name: Replace dedicated rolling release
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^pre-release([._-][A-Za-z0-9._-]+)?$') { throw 'Invalid rolling tag.' }
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete $env:RELEASE_TAG --yes --cleanup-tag
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot remove previous rolling release.' }
+          }
+          git ls-remote --exit-code origin "refs/tags/$env:RELEASE_TAG" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            git push origin ":refs/tags/$env:RELEASE_TAG"
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot remove stale rolling tag.' }
+          } elseif ($LASTEXITCODE -ne 2) { throw 'Cannot inspect rolling tag.' }
+          $global:LASTEXITCODE = 0
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          target_commitish: ${{ github.sha }}
           name: Plugins Pre-Release
           body_path: ./RELEASE_NOTES.md
           prerelease: true
-          files: |
-            ./release_files/*.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify release assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "===== Release assets ====="
-
-          gh release view "${{ github.event.inputs.release_tag }}" \
-            --json assets \
-            --jq '.assets[] | "\(.name) - \(.size) bytes"'
+          fail_on_unmatched_files: true
+          files: ./release-artifacts/release-*/*/build/*.zip
