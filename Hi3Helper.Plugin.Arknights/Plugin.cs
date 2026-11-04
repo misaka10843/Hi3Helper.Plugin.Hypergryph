@@ -11,8 +11,13 @@ using Microsoft.Extensions.Logging;
 namespace Hi3Helper.Plugin.Arknights;
 
 [GeneratedComClass]
-public partial class ArknightsPlugin : PluginBase
+public partial class ArknightsPlugin : PluginBase, IPlugin
 {
+    public new void SetPluginLocaleId(string? localeId)
+    {
+        if (Hi3Helper.Hypergryph.Shared.PluginCulture.TrySet(localeId, out string coreLocale)) base.SetPluginLocaleId(coreLocale);
+    }
+
     private static readonly IPluginPresetConfig[] PresetConfigInstances =
     [
         new ArknightsCnPresetConfig(),

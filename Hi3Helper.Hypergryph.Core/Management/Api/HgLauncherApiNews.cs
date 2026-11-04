@@ -258,6 +258,9 @@ public partial class HgLauncherApiNews : LauncherApiNewsBase
                     "[HgNews][SocialMedia] QR written: Index={Index}, Media='{Media}', QrPath='{QrPath}', QrDescription='{QrDescription}'",
                     i, media, entry.QrPath ?? "<null>", entry.QrDescription ?? "<null>");
             }
+            // Assign the complete representation flags after all upstream setters.
+            entry.Flags = LauncherSocialMediaEntryFlag.IconIsDataBuffer | LauncherSocialMediaEntryFlag.IconHoverIsDataBuffer |
+                (!string.IsNullOrWhiteSpace(item.Pic?.Url) ? LauncherSocialMediaEntryFlag.QrImageIsPath : LauncherSocialMediaEntryFlag.None);
         }
     }
 

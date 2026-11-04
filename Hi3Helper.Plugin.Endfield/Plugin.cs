@@ -12,8 +12,13 @@ using Microsoft.Extensions.Logging;
 namespace Hi3Helper.Plugin.Endfield;
 
 [GeneratedComClass]
-public partial class EndfieldPlugin : PluginBase
+public partial class EndfieldPlugin : PluginBase, IPlugin
 {
+    public new void SetPluginLocaleId(string? localeId)
+    {
+        if (Hi3Helper.Hypergryph.Shared.PluginCulture.TrySet(localeId, out string coreLocale)) base.SetPluginLocaleId(coreLocale);
+    }
+
     private static readonly IPluginPresetConfig[] PresetConfigInstances =
     [
         new EndfieldCnPresetConfig(),

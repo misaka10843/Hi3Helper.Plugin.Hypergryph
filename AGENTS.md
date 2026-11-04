@@ -49,32 +49,18 @@ Do not create a separate Global or Japan plugin. Do not make Yostar managers
 inherit from Hypergryph managers. Both implementations derive independently
 from the abstractions in `Hi3Helper.Plugin.Core`.
 
-## Submodule patches
+## Upstream Core compatibility
 
-The nested repositories are pinned to plain upstream commits, so a fix we need
-on top of one of them cannot be a commit of our own: a gitlink can only name a
-commit the remote already has, and CI fetches the submodule straight from that
-remote. Local fixes therefore live in `patches/<submodule>/` as `.patch` files.
+Keep nested repositories pinned to commits available on their upstream remotes.
+Do not create local-only submodule commits or patch Core to implement plugin
+features. Use the existing public ABI without adding exports or changing types.
 
-- `patches/Hi3Helper.Plugin.Core/0001-social-media-entry-flags.patch` — the
-  `LauncherSocialMediaEntry` setters clear the opposite flag with
-  `Flags |= ~X`, which sets every unrelated bit instead of clearing one. An
-  entry written with an icon buffer and a QR path ends up with `IsPath` and
-  `IsDataBuffer` both set, and the media panel renders the buffer as a path.
-- `patches/Hi3Helper.Plugin.Core/0002-game-file-logging.patch` adds independent
-  information/warning/error logs under `_Hi3_Hg/logs` and reports write failures
-  through the existing host callback.
-- `patches/Hi3Helper.Plugin.Core/0003-locale-validation.patch` accepts neutral
-  language codes and script subtags while rejecting malformed locale strings.
-- `patches/Hi3Helper.Plugin.Core/0004-settings-error-info.patch` preserves
-  localized settings errors across the Native AOT boundary through IErrorInfo.
-
-`Directory.Build.targets` runs `scripts/Apply-SubmodulePatches.ps1` before the
-patched submodule compiles, so a plain `dotnet build` and CI use the same
-sources. The script is idempotent, and it fails the build when a patch no
-longer applies. That failure is the intended behaviour after a submodule bump:
-rebase the patch onto the new commit, or delete it if upstream has fixed the
-bug. Do not work around it by committing a local submodule commit.
+`PluginApiBoundary` implements the published settings exports and localized COM
+error information. `PluginCulture` retains the requested locale for plugin UI
+and passes a compatible locale to Core. `PluginDiagnostics` captures Core's
+standard logger callback for file logging and forwards it to the host. News
+adapters assign the complete social-media flag set after populating entries.
+There is no build-time submodule patch step.
 
 ## Endfield game launch
 
@@ -116,10 +102,17 @@ actual storage, preserve unknown data, reject external changes and block
 modifications while the game is running. Expose only verified fields/regions;
 do not guess enum values or clone game settings into plugin JSON.
 Localize plugin-owned settings labels, choices, explanations and errors in
-English, Chinese and Japanese using `SharedStatic.PluginLocaleCode`; keep
+English, Chinese and Japanese using `PluginCulture.Locale`; keep
 stored keys, numbers and enum values invariant. The host controls layout and
 its own strings. Keep entry labels short and place shared help on sections,
 because the current host renders entries in narrow columns without layout hints.
+
+Game-specific preference implementations belong in their game plugin; Shared
+contains only common configuration, localization and ABI adapters. Endfield CN
+audio volumes use eight bytes labelled REG_DWORD, returned as Int64 by .NET.
+Preserve that storage shape when writing and rolling back. Do not reinterpret
+them as ordinary DWORD integers or silently convert them to REG_QWORD.
+Only expose recorded enum options; UI ordering alone does not establish values.
 
 ## Arknights Presets
 

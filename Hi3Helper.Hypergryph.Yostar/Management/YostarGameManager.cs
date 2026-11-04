@@ -83,7 +83,9 @@ public partial class YostarGameManager : GameManagerBase
 
     protected override void SetGamePathInner(string gamePath)
     {
+        Hi3Helper.Hypergryph.Shared.PluginDiagnostics.SetGamePath(gamePath);
         Hi3Helper.Hypergryph.Shared.PluginPaths.Migrate(gamePath);
+        SharedStatic.InstanceLogger.LogInformation("[PluginLog] Game path set: {GamePath}", gamePath);
         CurrentGameInstallPath = gamePath;
         _targetPackage = null;
         ReadLocalVersion();

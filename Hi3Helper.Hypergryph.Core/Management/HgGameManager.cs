@@ -116,7 +116,9 @@ public partial class HgGameManager : GameManagerBase
 
     protected override void SetGamePathInner(string gamePath)
     {
+        Hi3Helper.Hypergryph.Shared.PluginDiagnostics.SetGamePath(gamePath);
         Hi3Helper.Hypergryph.Shared.PluginPaths.Migrate(gamePath);
+        SharedStatic.InstanceLogger.LogInformation("[PluginLog] Game path set: {GamePath}", gamePath);
         SharedStatic.InstanceLogger.LogInformation($"[HgCore] SetGamePathInner called! Input path: '{gamePath}'");
         CurrentGameInstallPath = gamePath;
 

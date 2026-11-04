@@ -164,6 +164,7 @@ public partial class YostarLauncherApiNews : LauncherApiNewsBase
                 entry.WriteQrImage(item.QrImage);
                 entry.WriteQrImageDescription(item.Channel);
             }
+            entry.Flags = !string.IsNullOrWhiteSpace(item.QrImage) ? LauncherSocialMediaEntryFlag.QrImageIsPath : LauncherSocialMediaEntryFlag.None;
         }
     }
 

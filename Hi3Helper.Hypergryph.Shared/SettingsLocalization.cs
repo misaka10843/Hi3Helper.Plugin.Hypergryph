@@ -3,7 +3,7 @@ using System.Globalization;
 
 namespace Hi3Helper.Hypergryph.Shared;
 
-internal enum SettingsText
+public enum SettingsText
 {
     PageTitle, DisplaySection, GraphicsSection, PluginSection, DisplayHelp, GraphicsHelp,
     Verification, ParentExecutable, PluginHelp, EndfieldPluginHelp,
@@ -17,9 +17,9 @@ internal enum SettingsText
 }
 
 /// <summary>Compile-time translations, including in reflection-free Native AOT builds.</summary>
-internal static class SettingsLocalization
+public static class SettingsLocalization
 {
-    internal static string Get(SettingsText key)
+    public static string Get(SettingsText key)
     {
         (string English, string Chinese, string Japanese) text = key switch
         {
@@ -68,10 +68,10 @@ internal static class SettingsLocalization
             SettingsText.LinkedPluginDirectory => ("The plugin data directory must not be a directory link.", "插件数据目录不能是目录链接。", "プラグインのデータフォルダーにディレクトリリンクは使用できません。"),
             _ => throw new ArgumentOutOfRangeException(nameof(key))
         };
-        string language = SharedStatic.PluginLocaleCode.Split('-', '_')[0];
+        string language = PluginCulture.Locale.Split('-', '_')[0];
         return language.Equals("zh", StringComparison.OrdinalIgnoreCase) ? text.Chinese :
             language.Equals("ja", StringComparison.OrdinalIgnoreCase) ? text.Japanese : text.English;
     }
 
-    internal static string Format(SettingsText key, params object?[] values) => string.Format(CultureInfo.InvariantCulture, Get(key), values);
+    public static string Format(SettingsText key, params object?[] values) => string.Format(CultureInfo.InvariantCulture, Get(key), values);
 }

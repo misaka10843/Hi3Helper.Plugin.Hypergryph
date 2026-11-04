@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Collections.Concurrent;
 using Hi3Helper.Plugin.Core.Management;
 using Hi3Helper.Plugin.Core.Management.PresetConfig;
 using Hi3Helper.Plugin.Core.UI.Settings;
@@ -8,8 +9,17 @@ namespace Hi3Helper.Hypergryph.Shared;
 
 public static class PluginSettings
 {
-    private sealed record Draft(IGameManager Manager, PluginConfiguration Store, PluginOptions Options, string Snapshot, string GamePath, EndfieldDisplaySettings? Display);
+    private sealed record Draft(IGameManager Manager, PluginConfiguration Store, PluginOptions Options, string Snapshot, string GamePath, IGamePreferences? Display);
     private static readonly ConditionalWeakTable<IPluginPresetConfig, Draft> Drafts = new();
+    private static readonly ConcurrentDictionary<string, Func<IPluginPresetConfig, IGamePreferences?>> Providers = new(StringComparer.Ordinal);
+
+    public static void RegisterPreferences(string profile, Func<IPluginPresetConfig, IGamePreferences?> provider) => Providers[profile] = provider;
+
+    private static IGamePreferences? ReadPreferences(IPluginPresetConfig preset)
+    {
+        preset.comGet_ProfileName(out string profile);
+        return Providers.TryGetValue(profile, out var provider) ? provider(preset) : null;
+    }
 
     public static GameSettingsPage GetPage(IPluginPresetConfig preset, bool endfield)
     {
@@ -19,7 +29,7 @@ public static class PluginSettings
         var options = store.Read();
         manager.GetGamePath(out string? path);
         Drafts.Remove(preset);
-        var display = endfield && OperatingSystem.IsWindows() ? EndfieldDisplaySettings.Read(preset) : null;
+        var display = ReadPreferences(preset);
         Drafts.Add(preset, new(manager, store, options, store.Snapshot, path!, display));
         var entries = new List<GameSettingEntry>
         {
@@ -76,7 +86,7 @@ public static class PluginSettings
         Drafts.Add(preset, draft with
         {
             Snapshot = draft.Store.Snapshot,
-            Display = endfield && OperatingSystem.IsWindows() ? EndfieldDisplaySettings.Read(preset) : null
+            Display = ReadPreferences(preset)
         });
     }
 }
