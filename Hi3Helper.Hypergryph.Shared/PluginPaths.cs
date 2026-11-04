@@ -18,7 +18,7 @@ public static class PluginPaths
             gamePath = Path.GetFullPath(gamePath);
             if (Migrated.Contains(gamePath)) return;
             if (Directory.Exists(Root(gamePath)) && (File.GetAttributes(Root(gamePath)) & FileAttributes.ReparsePoint) != 0)
-                throw new IOException("插件数据目录不能是目录链接。");
+                throw new IOException(SettingsLocalization.Get(SettingsText.LinkedPluginDirectory));
             Directory.CreateDirectory(Root(gamePath));
             (string Old, string New)[] entries =
             [

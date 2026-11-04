@@ -4,10 +4,11 @@ using System.Runtime.Versioning;
 using Hi3Helper.Plugin.Core.Management.PresetConfig;
 using Hi3Helper.Plugin.Core.UI.Settings;
 using Microsoft.Win32;
+using static Hi3Helper.Hypergryph.Shared.SettingsLocalization;
 
 namespace Hi3Helper.Hypergryph.Shared;
 
-/// <summary>Existing Unity display preferences observed in the mainland Endfield client.</summary>
+/// <summary>Existing display and graphics preferences in the mainland Endfield client.</summary>
 [SupportedOSPlatform("windows")]
 public sealed class EndfieldDisplaySettings
 {
@@ -17,7 +18,9 @@ public sealed class EndfieldDisplaySettings
         ["display.width"] = "Screenmanager Resolution Width_h182942802",
         ["display.height"] = "Screenmanager Resolution Height_h2627697771",
         ["display.native"] = "Screenmanager Resolution Use Native_h1405027254",
-        ["display.mode"] = "Screenmanager Fullscreen mode_h3630240806"
+        ["display.mode"] = "Screenmanager Fullscreen mode_h3630240806",
+        ["graphics.quality"] = "video_quality_main_h2648490162",
+        ["graphics.fps"] = "video_frame_rate_8_h697513772"
     };
     private readonly Dictionary<string, int> _original;
     private readonly Dictionary<string, int> _values;
@@ -45,28 +48,52 @@ public sealed class EndfieldDisplaySettings
         var values = new Dictionary<string, int>();
         foreach (var (name, registryName) in Names)
         {
-            if (key.GetValue(registryName) is not int value || key.GetValueKind(registryName) != RegistryValueKind.DWord) return null;
-            values.Add(name, value);
+            if (key.GetValue(registryName) is int value && key.GetValueKind(registryName) == RegistryValueKind.DWord && IsValid(name, value))
+                values.Add(name, value);
         }
-        if (values["display.width"] < 1 || values["display.height"] < 1 ||
-            values["display.native"] is not (0 or 1) || values["display.mode"] is not (0 or 1 or 3)) return null;
-        return new(values, registryPath);
+        return values.Count == 0 ? null : new(values, registryPath);
     }
 
-    public GameSettingsSection Section => new("游戏设置 · 显示", [
-        GameSettingEntry.Toggle("display.native", "使用显示器原生分辨率", _values["display.native"] == 1, "关闭游戏后应用，下次启动生效；游戏自身可能再次覆盖显示设置。"),
-        GameSettingEntry.Number("display.width", "分辨率宽度", _values["display.width"], 1, int.MaxValue, 1, "使用原生分辨率时，此数值可能被游戏忽略。"),
-        GameSettingEntry.Number("display.height", "分辨率高度", _values["display.height"], 1, int.MaxValue),
-        GameSettingEntry.Choice("display.mode", "窗口模式", _values["display.mode"].ToString(CultureInfo.InvariantCulture), [
-            new("0", "独占全屏"), new("1", "无边框全屏"), new("3", "窗口")])
-    ]);
+    public IEnumerable<GameSettingsSection> Sections
+    {
+        get
+        {
+            var display = new List<GameSettingEntry>();
+            if (_values.TryGetValue("display.width", out int width)) display.Add(GameSettingEntry.Number("display.width", Get(SettingsText.Width), width, 1, int.MaxValue));
+            if (_values.TryGetValue("display.height", out int height)) display.Add(GameSettingEntry.Number("display.height", Get(SettingsText.Height), height, 1, int.MaxValue));
+            if (_values.TryGetValue("display.mode", out int mode)) display.Add(GameSettingEntry.Choice("display.mode", Get(SettingsText.WindowMode), mode.ToString(CultureInfo.InvariantCulture), [
+                new("0", Get(SettingsText.ExclusiveFullscreen)), new("1", Get(SettingsText.Borderless)), new("3", Get(SettingsText.Windowed))]));
+            if (_values.TryGetValue("display.native", out int native)) display.Add(GameSettingEntry.Toggle("display.native", Get(SettingsText.NativeResolution), native == 1));
+            if (display.Count != 0) yield return new(Get(SettingsText.DisplaySection), display) { Description = Get(SettingsText.DisplayHelp) };
+
+            var graphics = new List<GameSettingEntry>();
+            // Stored enum values are version-specific. Only existing, recognized DWORD values are editable.
+            if (_values.TryGetValue("graphics.quality", out int quality)) graphics.Add(GameSettingEntry.Choice("graphics.quality", Get(SettingsText.QualityPreset), quality.ToString(CultureInfo.InvariantCulture), [
+                new("1", Get(SettingsText.Ultra)), new("2", Get(SettingsText.High)), new("3", Get(SettingsText.Medium)), new("4", Get(SettingsText.Low)), new("5", Get(SettingsText.VeryLow))]));
+            if (_values.TryGetValue("graphics.fps", out int fps)) graphics.Add(GameSettingEntry.Choice("graphics.fps", Get(SettingsText.FrameRate), fps.ToString(CultureInfo.InvariantCulture), [
+                new("1000", "120 FPS"), new("2000", "60 FPS"), new("3000", "30 FPS")]));
+            if (graphics.Count != 0) yield return new(Get(SettingsText.GraphicsSection), graphics) { Description = Get(SettingsText.GraphicsHelp) };
+        }
+    }
+
+    private static bool IsValid(string name, int value) => name switch
+    {
+        "display.width" or "display.height" => value > 0,
+        "display.native" => value is 0 or 1,
+        "display.mode" => value is 0 or 1 or 3,
+        "graphics.quality" => value is >= 1 and <= 5,
+        "graphics.fps" => value is 1000 or 2000 or 3000,
+        _ => false
+    };
 
     public void Set(string name, string value)
     {
-        if (!Names.ContainsKey(name)) throw new ArgumentException("未知显示设置。");
-        int number = name == "display.native" ? (bool.Parse(value) ? 1 : 0) : int.Parse(value, CultureInfo.InvariantCulture);
-        if (name is "display.width" or "display.height" && number < 1 || name == "display.mode" && number is not (0 or 1 or 3))
-            throw new ArgumentOutOfRangeException(nameof(value));
+        if (!_values.ContainsKey(name)) throw new ArgumentException(Format(SettingsText.UnknownSetting, name));
+        int number;
+        if (name == "display.native" && bool.TryParse(value, out bool native)) number = native ? 1 : 0;
+        else if (name != "display.native" && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int integer)) number = integer;
+        else throw new ArgumentException(Format(SettingsText.InvalidValue, name));
+        if (!IsValid(name, number)) throw new ArgumentOutOfRangeException(nameof(value), Format(SettingsText.InvalidValue, name));
         _values[name] = number;
     }
 
@@ -74,19 +101,19 @@ public sealed class EndfieldDisplaySettings
     {
         if (!Dirty) return;
         var processes = Process.GetProcessesByName("Endfield");
-        try { if (processes.Length != 0) throw new InvalidOperationException("请关闭 Endfield 后再应用游戏显示设置。"); }
+        try { if (processes.Length != 0) throw new InvalidOperationException(Get(SettingsText.GameRunning)); }
         finally { foreach (var process in processes) process.Dispose(); }
-        using var key = Registry.CurrentUser.OpenSubKey(_registryPath) ?? throw new IOException("游戏配置已消失，请重新打开设置。");
-        foreach (var (name, registryName) in Names)
-            if (key.GetValue(registryName) is not int current || current != _original[name])
-                throw new IOException("游戏配置已被修改，请重新打开设置。");
+        using var key = Registry.CurrentUser.OpenSubKey(_registryPath) ?? throw new IOException(Get(SettingsText.GameConfigMissing));
+        foreach (var (name, original) in _original)
+            if (key.GetValue(Names[name]) is not int current || key.GetValueKind(Names[name]) != RegistryValueKind.DWord || current != original)
+                throw new IOException(Get(SettingsText.GameConfigChanged));
     }
 
     public void Apply()
     {
         Validate();
         if (!Dirty) return;
-        using var key = Registry.CurrentUser.OpenSubKey(_registryPath, true) ?? throw new IOException("游戏配置不可写。");
+        using var key = Registry.CurrentUser.OpenSubKey(_registryPath, true) ?? throw new IOException(Get(SettingsText.GameConfigReadOnly));
         try
         {
             foreach (var (name, value) in _values)
@@ -99,7 +126,7 @@ public sealed class EndfieldDisplaySettings
     public void Restore()
     {
         if (!Dirty) return;
-        using var key = Registry.CurrentUser.OpenSubKey(_registryPath, true) ?? throw new IOException("无法恢复游戏显示设置。");
+        using var key = Registry.CurrentUser.OpenSubKey(_registryPath, true) ?? throw new IOException(Get(SettingsText.GameConfigRestore));
         foreach (var (name, value) in _values)
             if (value != _original[name] && key.GetValue(Names[name]) is int current && current == value)
                 key.SetValue(Names[name], _original[name], RegistryValueKind.DWord);

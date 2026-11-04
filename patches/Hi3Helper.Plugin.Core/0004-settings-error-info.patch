@@ -1,0 +1,68 @@
+diff --git a/SharedStatic.V1Ext_Update6.cs b/SharedStatic.V1Ext_Update6.cs
+index 6b9da9e..b3207c3 100644
+--- a/SharedStatic.V1Ext_Update6.cs
++++ b/SharedStatic.V1Ext_Update6.cs
+@@ -17,4 +17,42 @@ public partial class SharedStaticV1Ext
+                                                                   char* value, int valueLength);
+     internal delegate HResult ApplyGameSettingsDelegate(nint presetConfig);
++
++    // Native AOT's HRESULT conversion does not reliably publish IErrorInfo.
++    // Populate the standard COM error channel explicitly so the host retains
++    // the plugin's localized validation message without changing the ABI.
++    internal static unsafe HResult SettingsError(Exception exception)
++    {
++        int result = Marshal.GetHRForException(exception);
++        if (!OperatingSystem.IsWindows() || CreateErrorInfo(out nint creator) != 0 || creator == 0)
++            return result;
++
++        nint error = 0;
++        try
++        {
++            var table = *(nint**)creator;
++            fixed (char* description = exception.Message)
++            {
++                if (((delegate* unmanaged[Stdcall]<nint, char*, int>)table[5])(creator, description) != 0)
++                    return result;
++            }
++            Guid errorInfoId = new("1CF2B120-547D-101B-8E65-08002B2BD119");
++            if (((delegate* unmanaged[Stdcall]<nint, Guid*, nint*, int>)table[0])(creator, &errorInfoId, &error) == 0)
++                SetErrorInfo(0, error);
++        }
++        finally
++        {
++            if (error != 0) ((delegate* unmanaged[Stdcall]<nint, uint>)(*(nint**)error)[2])(error);
++            ((delegate* unmanaged[Stdcall]<nint, uint>)(*(nint**)creator)[2])(creator);
++        }
++        return result;
++    }
++
++    [LibraryImport("oleaut32.dll")]
++    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
++    private static partial int CreateErrorInfo(out nint errorInfo);
++
++    [LibraryImport("oleaut32.dll")]
++    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
++    private static partial int SetErrorInfo(uint reserved, nint errorInfo);
+ }
+
+@@ -47,5 +85,5 @@ public partial class SharedStaticV1Ext<T>
+         {
+             InstanceLogger.LogError(ex, "An error occurred while retrieving the plugin game settings page");
+-            return Marshal.GetHRForException(ex);
++            return SettingsError(ex);
+         }
+     }
+@@ -67,5 +105,5 @@ public partial class SharedStaticV1Ext<T>
+             InstanceLogger.LogError(ex, "An error occurred while updating plugin game setting {Key}",
+                                     key == null ? null : new string(key, 0, keyLength));
+-            return Marshal.GetHRForException(ex);
++            return SettingsError(ex);
+         }
+     }
+@@ -81,5 +119,5 @@ public partial class SharedStaticV1Ext<T>
+         {
+             InstanceLogger.LogError(ex, "An error occurred while applying plugin game settings");
+-            return Marshal.GetHRForException(ex);
++            return SettingsError(ex);
+         }
+     }

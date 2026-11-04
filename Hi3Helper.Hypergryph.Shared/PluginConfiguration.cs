@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Hi3Helper.Plugin.Core.Management;
+using static Hi3Helper.Hypergryph.Shared.SettingsLocalization;
 
 namespace Hi3Helper.Hypergryph.Shared;
 
@@ -44,20 +45,25 @@ public sealed class PluginConfiguration
         return state;
     }
 
-    private string ConfigPath => _path == null ? throw new InvalidOperationException("请先设置游戏安装目录。") : PluginPaths.In(_path, "config.json");
+    private string ConfigPath => _path == null ? throw new InvalidOperationException(Get(SettingsText.SetGamePath)) : PluginPaths.In(_path, "config.json");
 
     public PluginOptions Read()
     {
         lock (_gate)
         {
-            if (_path == null || !Directory.Exists(_path)) throw new DirectoryNotFoundException("请先设置有效的游戏安装目录。");
+            if (_path == null || !Directory.Exists(_path)) throw new DirectoryNotFoundException(Get(SettingsText.GameDirectoryMissing));
             PluginPaths.Migrate(_path);
             string path = ConfigPath;
             string? json = File.Exists(path) ? File.ReadAllText(path) : null;
-            var options = json == null ? new PluginOptions() :
-                JsonSerializer.Deserialize(json, PluginJsonContext.Default.PluginOptions) ?? throw new InvalidDataException("插件配置不能为空。");
+            PluginOptions options;
+            try
+            {
+                options = json == null ? new PluginOptions() :
+                    JsonSerializer.Deserialize(json, PluginJsonContext.Default.PluginOptions) ?? throw new InvalidDataException(Get(SettingsText.InvalidJson));
+            }
+            catch (JsonException ex) { throw new InvalidDataException(Get(SettingsText.InvalidJson), ex); }
             if (options.SchemaVersion != 1 || options.ParentExecutablePath == null)
-                throw new InvalidDataException("不支持的插件配置版本或父进程路径。");
+                throw new InvalidDataException(Get(SettingsText.UnsupportedConfig));
             _observed = json;
             if (json == null) Save(options);
             return options;
@@ -68,7 +74,7 @@ public sealed class PluginConfiguration
     {
         string path = ConfigPath;
         string? current = File.Exists(path) ? File.ReadAllText(path) : null;
-        if (current != _observed) throw new IOException("配置已被其他程序修改，请重新打开设置后再应用。");
+        if (current != _observed) throw new IOException(Get(SettingsText.ConfigChanged));
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         string json = JsonSerializer.Serialize(options, PluginJsonContext.Default.PluginOptions);
         string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -87,7 +93,7 @@ public sealed class PluginConfiguration
     {
         lock (_gate)
         {
-            if (_running && options.ManualVerificationRequested) throw new InvalidOperationException("验证正在运行，请等待完成。");
+            if (_running && options.ManualVerificationRequested) throw new InvalidOperationException(Get(SettingsText.VerificationRunning));
             bool request = options.ManualVerificationRequested;
             _observed = expectedSnapshot;
             options.ManualVerificationRequested = false;
@@ -109,7 +115,7 @@ public sealed class PluginConfiguration
                 bool legacy = File.Exists(marker);
                 if (options.ManualVerificationRequested || legacy)
                 {
-                    if (_running) throw new InvalidOperationException("验证正在运行，不能重复请求。");
+                    if (_running) throw new InvalidOperationException(Get(SettingsText.VerificationRunning));
                     options.ManualVerificationRequested = false;
                     Save(options);
                     if (legacy) File.Delete(marker);
@@ -124,7 +130,7 @@ public sealed class PluginConfiguration
     {
         lock (_gate)
         {
-            if (_running) throw new InvalidOperationException("验证已在运行。");
+            if (_running) throw new InvalidOperationException(Get(SettingsText.VerificationDuplicate));
             bool verify = HasVerificationRequest;
             _pending = false;
             _running = true;

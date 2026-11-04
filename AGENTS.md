@@ -64,6 +64,10 @@ remote. Local fixes therefore live in `patches/<submodule>/` as `.patch` files.
 - `patches/Hi3Helper.Plugin.Core/0002-game-file-logging.patch` adds independent
   information/warning/error logs under `_Hi3_Hg/logs` and reports write failures
   through the existing host callback.
+- `patches/Hi3Helper.Plugin.Core/0003-locale-validation.patch` accepts neutral
+  language codes and script subtags while rejecting malformed locale strings.
+- `patches/Hi3Helper.Plugin.Core/0004-settings-error-info.patch` preserves
+  localized settings errors across the Native AOT boundary through IErrorInfo.
 
 `Directory.Build.targets` runs `scripts/Apply-SubmodulePatches.ps1` before the
 patched submodule compiles, so a plain `dotnet build` and CI use the same
@@ -111,6 +115,11 @@ Apply, isolated by preset and game path. Game settings write to the client's
 actual storage, preserve unknown data, reject external changes and block
 modifications while the game is running. Expose only verified fields/regions;
 do not guess enum values or clone game settings into plugin JSON.
+Localize plugin-owned settings labels, choices, explanations and errors in
+English, Chinese and Japanese using `SharedStatic.PluginLocaleCode`; keep
+stored keys, numbers and enum values invariant. The host controls layout and
+its own strings. Keep entry labels short and place shared help on sections,
+because the current host renders entries in narrow columns without layout hints.
 
 ## Arknights Presets
 
