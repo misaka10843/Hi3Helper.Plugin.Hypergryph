@@ -63,7 +63,7 @@ public partial class HgGameInstaller
             _owner.GameManager.GetGamePath(out var installPath);
             if (string.IsNullOrEmpty(installPath)) throw new InvalidOperationException("Install path is missing.");
 
-            var downloadDir = Path.Combine(installPath, "Diffs");
+            var downloadDir = GetDownloadDirectory(installPath);
             Directory.CreateDirectory(downloadDir);
 
             InstallProgress progress = default;
@@ -258,8 +258,8 @@ public partial class HgGameInstaller
                 SharedStatic.InstanceLogger.LogInformation(
                     "[HgInstaller] hpatchz.exe is ready.");
 
-                var tempExtractDir = Path.Combine(installPath, "_Hg_DeltaTemp");
-                var stageDir = Path.Combine(installPath, "_Hg_ApplyStage");
+                var tempExtractDir = Hi3Helper.Hypergryph.Shared.PluginPaths.In(installPath, "delta-temp");
+                var stageDir = Hi3Helper.Hypergryph.Shared.PluginPaths.In(installPath, "apply-stage");
                 // DEBUG
                 var skipExtractForDebug = false;
 
@@ -990,7 +990,7 @@ public partial class HgGameInstaller
             string targetGameRoot,
             CancellationToken token)
         {
-            var toolsDir = Path.Combine(targetGameRoot, "_Hg_Tools");
+            var toolsDir = Hi3Helper.Hypergryph.Shared.PluginPaths.In(targetGameRoot, "tools");
             Directory.CreateDirectory(toolsDir);
 
             var hpatchzPath = Path.Combine(toolsDir, "hpatchz.exe");

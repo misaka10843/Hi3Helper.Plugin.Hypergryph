@@ -18,7 +18,32 @@ protocol libraries per launcher/vendor.
 Arknights must remain one plugin with multiple presets:
 
 - Mainland China and Bilibili use `HgGameManager` / `HgGameInstaller`.
-- Global and Japan use `YostarGameManager` / `YostarGameInstaller`.
+- Global, Japan and Korea use `YostarGameManager` / `YostarGameInstaller`.
+
+`Hi3Helper.Hypergryph.Shared` owns common plugin paths, configuration, request
+state and settings adapters. It references Plugin.Core, not either protocol
+library. Keep Yostar independent from the Hypergryph protocol implementation.
+
+## Commits
+
+After adding or changing functionality, run the relevant validation and create
+a Git commit. Write commit subjects and bodies in English. Use exactly
+`feat (module): description`, for example
+`feat (settings): integrate game and plugin configuration pages`.
+Group commits by complete functionality.
+Review staged changes and include only task-related source, documentation,
+patches and upstream gitlinks. Do not commit user configuration, build outputs
+or unrelated lock-file rewrites. Do not push or publish unless requested.
+
+## Documentation changes
+
+For README changes, propose the edits to the user first. Do not edit README
+files without the user's explicit approval of those changes.
+Do not add investigation notes, evidence/support matrices or validation diaries
+to Git unless explicitly requested. Keep temporary research and verification
+notes outside tracked source, for example under `.git/local-notes`.
+Update existing technical documentation only where needed to describe changed
+behavior; do not create extra documentation as a routine implementation step.
 
 Do not create a separate Global or Japan plugin. Do not make Yostar managers
 inherit from Hypergryph managers. Both implementations derive independently
@@ -36,6 +61,9 @@ remote. Local fixes therefore live in `patches/<submodule>/` as `.patch` files.
   `Flags |= ~X`, which sets every unrelated bit instead of clearing one. An
   entry written with an icon buffer and a QR path ends up with `IsPath` and
   `IsDataBuffer` both set, and the media panel renders the buffer as a path.
+- `patches/Hi3Helper.Plugin.Core/0002-game-file-logging.patch` adds independent
+  information/warning/error logs under `_Hi3_Hg/logs` and reports write failures
+  through the existing host callback.
 
 `Directory.Build.targets` runs `scripts/Apply-SubmodulePatches.ps1` before the
 patched submodule compiles, so a plain `dotnet build` and CI use the same
@@ -50,22 +78,39 @@ From client 1.6.3 the game refuses to start unless its **direct** parent process
 is a Hypergryph-signed `Games.exe`. That parent is never resumed; it exists only
 to satisfy the check.
 
-`Exports.GameLaunch.cs` stages one of the game's own signed executables
-(`PlatformProcess.exe`, `UnityCrashHandler64.exe`, `Endfield.exe`) into
-`%TEMP%\Hi3Helper\ParentBridge\Games.exe`, creates it suspended, then starts the
-game with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`. Nothing is written into the
-game directory, and every failure falls back to a plain direct start.
+`Exports.GameLaunch.cs` uses one configured parent source, defaulting to the
+game-root `PlatformProcess.exe`. `Endfield.exe` itself requests elevation and
+is not the default parent. Sources may be absolute or game-relative EXE paths.
+Validate both Authenticode signatures and compare SHA-256 fingerprints of the
+actual signer certificates with the official game EXE, not publisher strings.
+Revalidate the staged copy under `_Hi3_Hg/parent/<PID>/<session>/Games.exe`.
+Keep it suspended and release its resources on exit, failure and cancellation.
+Failures are explicit: do not reintroduce recursive candidate searches,
+official-launcher downloads or automatic direct-start fallbacks.
 
-`OfficialLauncherBridge` / `OfficialLauncherProvider` implement the older route
-(locate or download the real launcher) and stay compiled but unused:
-`AcquireOfficialLauncher` in `Exports.GameLaunch.cs` is `false`. Do not delete
-them, and do not flip the flag back without confirming the decoy still passes.
+Details: `docs/DECOY_PARENT_BRIDGE.md`.
 
-Both routes share `ParentProcessBridge`, which owns suspension, signature
-verification, the parent attribute and teardown. A subclass only answers where
-the parent executable comes from.
+## Plugin storage and settings
 
-Details: `docs/DECOY_PARENT_BRIDGE.md`, `docs/OFFICIAL_LAUNCHER_BRIDGE.md`.
+All plugin-owned working directories belong under `<game>/_Hi3_Hg`, accessed
+through `PluginPaths`: `logs`, `downloads`, `delta-temp`, `apply-stage`, `tools`,
+and `parent`. Official metadata and protocol-required per-file `.tmp` files
+keep their official locations. Migrate legacy directories only when the target
+is absent; preserve conflicts and directory links rather than merging them.
+
+`config.json` uses source-generated JSON, atomic replacement, schema versioning
+and external-change detection. Preserve unknown fields and malformed files.
+`manualVerificationRequested` is a one-shot command: clear it on disk before
+accepting it into per-manager memory. Reading the settings page does not
+consume it. Status/size queries preserve the in-memory request. Starting the
+operation consumes it; failure/cancellation/restart never requeues it.
+Suppress preload presentation while a manual verification is pending.
+
+Both plugins implement Core v0.1.6 settings-page exports. Edits are drafts until
+Apply, isolated by preset and game path. Game settings write to the client's
+actual storage, preserve unknown data, reject external changes and block
+modifications while the game is running. Expose only verified fields/regions;
+do not guess enum values or clone game settings into plugin JSON.
 
 ## Arknights Presets
 
@@ -75,6 +120,7 @@ Preset registration is in `Hi3Helper.Plugin.Arknights/Plugin.cs`.
 - `ArknightsBiliPresetConfig`: Hypergryph Bilibili, channel `2`.
 - `ArknightsGlobalPresetConfig`: Yostar `Arknights_EN`.
 - `ArknightsJpPresetConfig`: Yostar `Arknights_JP`.
+- `ArknightsKrPresetConfig`: Yostar Korea (see its options for the game tag).
 
 Global and Japan use the same Yostar implementation. Region differences belong
 in `YostarLauncherOptions`, not duplicated manager/installer classes.
@@ -192,8 +238,8 @@ The Yostar installer is file-based rather than archive-based:
 Keep path validation, download verification, and metadata writing intact. A
 downloaded file must never replace the target before its CRC matches.
 
-The `.collapse_verify_game` marker requests a full CRC scan on the next update.
-Remove it only after a successful repair/update.
+The legacy `.collapse_verify_game` marker is imported into a one-shot manual
+verification request and removed when accepted, not when repair completes.
 
 Yostar currently exposes no separate preload version/package. Keep
 `HasPreload` false and do not infer preload state from `game_latest_file_path`.
@@ -222,7 +268,7 @@ At minimum, protocol changes should verify:
 - Global and Japan signed API requests both return code `200`.
 - Each returned manifest contains a non-empty `source` and file list.
 - CRC64 matches at least one small official CDN file.
-- Arknights still compiles with all four presets registered.
+- Arknights still compiles with all five presets registered.
 - `git diff --check` passes.
 
 The solution currently has an existing warning because
@@ -238,3 +284,9 @@ Do not claim full installation validation unless a complete client download,
 metadata write, game launch, update, repair, and uninstall cycle was actually
 performed. API, CRC, and build smoke tests are not a substitute for that
 end-to-end test.
+
+Run the available regression checks appropriate to the changed behavior.
+Settings and launch changes also require Native AOT publishing with
+`ReleaseNoReflectionPublish-O1` and an interface smoke test; ordinary managed
+builds do not establish launcher compatibility. Record live UI/game acceptance
+separately from automated checks.

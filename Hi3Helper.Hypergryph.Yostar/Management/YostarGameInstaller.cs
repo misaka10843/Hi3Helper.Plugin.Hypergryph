@@ -39,6 +39,7 @@ public partial class YostarGameInstaller : GameInstallerBase
         CancellationToken token)
     {
         if (gameInstallerKind == GameInstallerKind.Preload) return 0L;
+        if (GameManager is YostarGameManager manager && manager.IsManualVerifyRequested) return 0L;
         YostarInstallPlan plan = await CreatePlanAsync(token).ConfigureAwait(false);
         return plan.DownloadFiles.Sum(static file => file.SizeValue);
     }
@@ -47,6 +48,7 @@ public partial class YostarGameInstaller : GameInstallerBase
         CancellationToken token)
     {
         if (gameInstallerKind == GameInstallerKind.Preload) return 0L;
+        if (GameManager is YostarGameManager manager && manager.IsManualVerifyRequested) return 0L;
         YostarInstallPlan plan = await CreatePlanAsync(token).ConfigureAwait(false);
         long downloaded = 0;
         foreach (YostarManifestFile file in plan.DownloadFiles)
@@ -80,7 +82,19 @@ public partial class YostarGameInstaller : GameInstallerBase
     private async Task RunInstallAsync(InstallProgressDelegate? progressDelegate,
         InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
     {
-        YostarInstallPlan plan = await CreatePlanAsync(token).ConfigureAwait(false);
+        var configuration = Hi3Helper.Hypergryph.Shared.PluginConfiguration.For(GameManager);
+        bool verify = configuration.BeginVerification();
+        try
+        {
+            await RunPlanAsync(progressDelegate, progressStateDelegate, token, verify).ConfigureAwait(false);
+        }
+        finally { configuration.EndVerification(); }
+    }
+
+    private async Task RunPlanAsync(InstallProgressDelegate? progressDelegate,
+        InstallProgressStateDelegate? progressStateDelegate, CancellationToken token, bool verify)
+    {
+        YostarInstallPlan plan = await CreatePlanAsync(token, verify).ConfigureAwait(false);
         var progress = new InstallProgress
         {
             TotalCountToDownload = plan.DownloadFiles.Count,
@@ -155,7 +169,6 @@ public partial class YostarGameInstaller : GameInstallerBase
         Report(InstallProgressState.Install);
         await YostarLocalStorage.WriteMetadataAsync(plan.GamePath, plan.Manager.Options, plan.Package.Config,
             plan.Package.Manifest.Files, token).ConfigureAwait(false);
-        plan.Manager.CompleteManualVerifyRequest();
 
         progress.DownloadedBytes = progress.TotalBytesToDownload;
         progress.DownloadedCount = progress.TotalCountToDownload;
@@ -163,14 +176,14 @@ public partial class YostarGameInstaller : GameInstallerBase
         Report(InstallProgressState.Completed);
     }
 
-    private async Task<YostarInstallPlan> CreatePlanAsync(CancellationToken token)
+    private async Task<YostarInstallPlan> CreatePlanAsync(CancellationToken token, bool verify = false)
     {
         if (GameManager is not YostarGameManager manager)
             throw new InvalidOperationException("GameManager is not YostarGameManager.");
         string gamePath = EnsureAndGetGamePath();
         YostarTargetPackage package = await manager.GetTargetPackageAsync(true, token).ConfigureAwait(false);
         YostarLocalManifest? localManifest = YostarLocalStorage.ReadManifest(gamePath);
-        bool fullVerify = manager.IsManualVerifyRequested;
+        bool fullVerify = verify;
 
         var localFiles = localManifest?.Files.ToDictionary(NormalizeManifestPath,
             StringComparer.OrdinalIgnoreCase) ??
@@ -189,15 +202,16 @@ public partial class YostarGameInstaller : GameInstallerBase
                 continue;
             }
 
-            if (fullVerify)
+            bool hasLocalFile = localFiles.TryGetValue(NormalizeManifestPath(remoteFile),
+                out YostarManifestFile? localFile);
+            if (fullVerify || !hasLocalFile)
             {
                 string hash = await YostarCrc64.ComputeFileAsync(targetPath, token).ConfigureAwait(false);
                 if (!string.Equals(hash, remoteFile.Hash, StringComparison.Ordinal)) downloadFiles.Add(remoteFile);
                 continue;
             }
 
-            if (localFiles.TryGetValue(NormalizeManifestPath(remoteFile), out YostarManifestFile? localFile) &&
-                !string.Equals(localFile.Hash, remoteFile.Hash, StringComparison.Ordinal))
+            if (!string.Equals(localFile!.Hash, remoteFile.Hash, StringComparison.Ordinal))
                 downloadFiles.Add(remoteFile);
         }
 

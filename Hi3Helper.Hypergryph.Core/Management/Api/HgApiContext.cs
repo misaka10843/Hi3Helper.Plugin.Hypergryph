@@ -9,8 +9,6 @@ namespace Hi3Helper.Hypergryph.Core.Management.Api;
 [JsonSerializable(typeof(HgBatchResponse))]
 [JsonSerializable(typeof(HgPatchManifest))]
 [JsonSerializable(typeof(HgManifestNode))]
-[JsonSerializable(typeof(HgGetLatestLauncherReq))]
-[JsonSerializable(typeof(HgGetLatestLauncherRsp))]
 public partial class HgApiContext : JsonSerializerContext
 {
 }

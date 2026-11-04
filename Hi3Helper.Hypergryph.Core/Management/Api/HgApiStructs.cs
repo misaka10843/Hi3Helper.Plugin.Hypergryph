@@ -21,10 +21,6 @@ public class HgProxyRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public HgGetLatestGameReq? GetLatestGameReq { get; set; }
 
-    [JsonPropertyName("get_latest_launcher_req")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public HgGetLatestLauncherReq? GetLatestLauncherReq { get; set; }
-
     // 通用请求体用于 Banner, News, BgImage, Sidebar
     [JsonPropertyName("get_banner_req")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -52,15 +48,6 @@ public class HgGetLatestGameReq
     [JsonPropertyName("launcher_appcode")] public string LauncherAppCode { get; set; } = null!;
 }
 
-public class HgGetLatestLauncherReq
-{
-    [JsonPropertyName("appcode")] public string AppCode { get; set; } = null!;
-    [JsonPropertyName("launcher_appcode")] public string LauncherAppCode { get; set; } = null!;
-    [JsonPropertyName("channel")] public string Channel { get; set; } = null!;
-    [JsonPropertyName("sub_channel")] public string SubChannel { get; set; } = null!;
-    [JsonPropertyName("version")] public string Version { get; set; } = "";
-}
-
 public class HgCommonReq
 {
     [JsonPropertyName("appcode")] public string AppCode { get; set; } = null!;
@@ -86,9 +73,6 @@ public class HgProxyResponse
     [JsonPropertyName("get_latest_game_rsp")]
     public HgGetLatestGameRsp? GetLatestGameRsp { get; set; }
 
-    [JsonPropertyName("get_latest_launcher_rsp")]
-    public HgGetLatestLauncherRsp? GetLatestLauncherRsp { get; set; }
-
     [JsonPropertyName("get_banner_rsp")] public HgGetBannerRsp? GetBannerRsp { get; set; }
 
     [JsonPropertyName("get_announcement_rsp")]
@@ -108,19 +92,6 @@ public class HgGetLatestGameRsp
     [JsonPropertyName("pkg")] public HgPkgInfo? Pkg { get; set; }
     [JsonPropertyName("patch")] public HgPatchInfo? Patch { get; set; }
     [JsonPropertyName("pre_patch")] public HgPatchInfo? PrePatch { get; set; }
-}
-
-// --- 启动器版本信息 ---
-public class HgGetLatestLauncherRsp
-{
-    [JsonPropertyName("action")] public int Action { get; set; }
-    [JsonPropertyName("version")] public string? Version { get; set; }
-    [JsonPropertyName("request_version")] public string? RequestVersion { get; set; }
-    [JsonPropertyName("zip_package_url")] public string? ZipPackageUrl { get; set; }
-    [JsonPropertyName("md5")] public string? Md5 { get; set; }
-    [JsonPropertyName("package_size")] public string? PackageSize { get; set; }
-    [JsonPropertyName("total_size")] public string? TotalSize { get; set; }
-    [JsonPropertyName("description")] public string? Description { get; set; }
 }
 
 // --- 增量更新 / 预下载 ---

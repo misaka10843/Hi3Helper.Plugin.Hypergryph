@@ -20,6 +20,12 @@ public partial class HgGameInstaller : GameInstallerBase
 {
     private readonly HttpClient _downloadHttpClient;
 
+    private static string GetDownloadDirectory(string gamePath)
+    {
+        Hi3Helper.Hypergryph.Shared.PluginPaths.Migrate(gamePath);
+        return Hi3Helper.Hypergryph.Shared.PluginPaths.In(gamePath, "downloads");
+    }
+
     public HgGameInstaller(IGameManager? gameManager) : base(gameManager)
     {
         _downloadHttpClient = new PluginHttpClientBuilder()
@@ -69,7 +75,7 @@ public partial class HgGameInstaller : GameInstallerBase
         GameManager.GetGamePath(out var installPath);
         if (string.IsNullOrEmpty(installPath)) return 0L;
 
-        var downloadDir = Path.Combine(installPath, "Diffs");
+        var downloadDir = GetDownloadDirectory(installPath);
         if (!Directory.Exists(downloadDir)) return 0L;
 
         long downloadedSize = 0;
@@ -104,32 +110,29 @@ public partial class HgGameInstaller : GameInstallerBase
     protected override async Task StartUpdateAsyncInner(InstallProgressDelegate? progressDelegate,
         InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
     {
-        await InitAsync(token).ConfigureAwait(false);
-
         if (GameManager is not HgGameManager manager)
             throw new InvalidOperationException("GameManager is not HgGameManager");
 
-        if (!manager.IsManualVerifyRequested)
+        var configuration = Hi3Helper.Hypergryph.Shared.PluginConfiguration.For(manager);
+        bool verify = configuration.BeginVerification();
+        try
         {
-            await StartInstallCoreAsync(GameInstallerKind.Update, progressDelegate, progressStateDelegate, token)
-                .ConfigureAwait(false);
-            return;
+            if (!verify)
+            {
+                await StartInstallCoreAsync(GameInstallerKind.Update, progressDelegate, progressStateDelegate, token).ConfigureAwait(false);
+                return;
+            }
+            await InitAsync(token).ConfigureAwait(false);
+            GameManager.GetGamePath(out string? installPath);
+            if (string.IsNullOrWhiteSpace(installPath) || !Directory.Exists(installPath))
+                throw new DirectoryNotFoundException("The game installation directory is missing.");
+            SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Starting requested manual verification.");
+            progressStateDelegate?.Invoke(InstallProgressState.Preparing);
+            var repairer = new HgGameRepairer(_downloadHttpClient, manager, installPath);
+            await repairer.StartRepairAsync(progressDelegate, progressStateDelegate, token).ConfigureAwait(false);
+            progressStateDelegate?.Invoke(InstallProgressState.Completed);
         }
-
-        GameManager.GetGamePath(out string? installPath);
-        if (string.IsNullOrWhiteSpace(installPath) || !Directory.Exists(installPath))
-            throw new DirectoryNotFoundException("The game installation directory is missing.");
-
-        SharedStatic.InstanceLogger.LogInformation(
-            $"[HgInstaller] {HgGameManager.ManualVerifyMarkerFileName} detected. Starting manual verification.");
-
-        progressStateDelegate?.Invoke(InstallProgressState.Preparing);
-
-        var repairer = new HgGameRepairer(_downloadHttpClient, manager, installPath);
-        await repairer.StartRepairAsync(progressDelegate, progressStateDelegate, token).ConfigureAwait(false);
-
-        manager.CompleteManualVerifyRequest();
-        progressStateDelegate?.Invoke(InstallProgressState.Completed);
+        finally { configuration.EndVerification(); }
     }
 
     protected override Task StartPreloadAsyncInner(InstallProgressDelegate? progressDelegate,
@@ -161,7 +164,7 @@ public partial class HgGameInstaller : GameInstallerBase
         if (string.IsNullOrEmpty(installPath))
             throw new InvalidOperationException("Install path is missing.");
 
-        var downloadDir = Path.Combine(installPath, "Diffs");
+        var downloadDir = GetDownloadDirectory(installPath);
         Directory.CreateDirectory(downloadDir);
 
         InstallProgress progress = default;

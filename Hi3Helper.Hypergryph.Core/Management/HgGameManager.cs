@@ -18,7 +18,6 @@ namespace Hi3Helper.Hypergryph.Core.Management;
 [GeneratedComClass]
 public partial class HgGameManager : GameManagerBase
 {
-    internal const string ManualVerifyMarkerFileName = ".collapse_verify_game";
 
     private readonly string _apiUrl;
     private readonly string _appCode;
@@ -52,7 +51,6 @@ public partial class HgGameManager : GameManagerBase
 
     internal string? PatchManifestUrl => _latestGameInfo?.Patch?.V2PatchInfoUrl;
     internal string? PatchCdKey => _latestGameInfo?.Patch?.CdKey;
-    internal string? TargetVersion => _latestGameInfo?.PrePatch?.Version ?? _latestGameInfo?.Version;
 
     internal List<HgPack>? GamePacks => GetGamePacks(GameInstallerKind.Update);
 
@@ -83,41 +81,12 @@ public partial class HgGameManager : GameManagerBase
         }
     }
 
-    protected override bool HasPreload => IsInstalled && ApiPreloadGameVersion != GameVersion.Empty;
+    protected override bool HasPreload => !IsManualVerifyRequested && IsInstalled && ApiPreloadGameVersion != GameVersion.Empty;
 
     protected override GameVersion ApiGameVersion { get; set; }
     protected override GameVersion ApiPreloadGameVersion { get; set; }
 
-    internal bool IsManualVerifyRequested
-    {
-        get
-        {
-            string? markerPath = ManualVerifyMarkerPath;
-            return markerPath != null && File.Exists(markerPath);
-        }
-    }
-
-    internal string? ManualVerifyMarkerPath => string.IsNullOrWhiteSpace(CurrentGameInstallPath)
-        ? null
-        : Path.Combine(CurrentGameInstallPath, ManualVerifyMarkerFileName);
-
-    internal void CompleteManualVerifyRequest()
-    {
-        string? markerPath = ManualVerifyMarkerPath;
-        if (markerPath == null || !File.Exists(markerPath)) return;
-
-        try
-        {
-            File.Delete(markerPath);
-            SharedStatic.InstanceLogger.LogInformation(
-                "[HgCore] Manual verification marker removed after successful repair.");
-        }
-        catch (Exception ex)
-        {
-            SharedStatic.InstanceLogger.LogWarning(
-                $"[HgCore] Failed to remove manual verification marker: {ex.Message}");
-        }
-    }
+    internal bool IsManualVerifyRequested => Hi3Helper.Hypergryph.Shared.PluginConfiguration.For(this).HasVerificationRequest;
 
     internal List<HgPack>? GetGamePacks(GameInstallerKind kind)
     {
@@ -147,6 +116,7 @@ public partial class HgGameManager : GameManagerBase
 
     protected override void SetGamePathInner(string gamePath)
     {
+        Hi3Helper.Hypergryph.Shared.PluginPaths.Migrate(gamePath);
         SharedStatic.InstanceLogger.LogInformation($"[HgCore] SetGamePathInner called! Input path: '{gamePath}'");
         CurrentGameInstallPath = gamePath;
 
@@ -270,52 +240,6 @@ public partial class HgGameManager : GameManagerBase
         return InitAsyncInner(true, token);
     }
 
-    internal async Task<HgGetLatestLauncherRsp?> GetLatestLauncherAsync(CancellationToken token)
-    {
-        var requestBody = new HgBatchRequest
-        {
-            Seq = _seq,
-            ProxyReqs = new List<HgProxyRequest>
-            {
-                new()
-                {
-                    Kind = "get_latest_launcher",
-                    GetLatestLauncherReq = new HgGetLatestLauncherReq
-                    {
-                        AppCode = _launcherAppCode,
-                        LauncherAppCode = _appCode,
-                        Channel = _channel,
-                        SubChannel = _subChannel,
-                        Version = string.Empty
-                    }
-                }
-            }
-        };
-
-        try
-        {
-            using var response = await ApiResponseHttpClient!.PostAsJsonAsync(_apiUrl, requestBody,
-                HgApiContext.Default.HgBatchRequest, token);
-            response.EnsureSuccessStatusCode();
-
-            var responseBody =
-                await response.Content.ReadFromJsonAsync(HgApiContext.Default.HgBatchResponse, token);
-
-            var result = responseBody?.ProxyRsps?.FirstOrDefault(x => x.Kind == "get_latest_launcher")
-                ?.GetLatestLauncherRsp;
-
-            SharedStatic.InstanceLogger.LogInformation(
-                $"[HgCore] Launcher update query - Action: {result?.Action}, Version: {result?.Version}, Size: {result?.PackageSize}");
-
-            return result;
-        }
-        catch (Exception ex)
-        {
-            SharedStatic.InstanceLogger.LogWarning($"[HgCore] Launcher update query failed: {ex.Message}");
-            return null;
-        }
-    }
-
     protected override void SetCurrentGameVersionInner(in GameVersion gameVersion)
     {
         CurrentGameVersion = gameVersion;
@@ -328,6 +252,7 @@ public partial class HgGameManager : GameManagerBase
 
     public override void LoadConfig()
     {
+        _ = IsManualVerifyRequested;
     }
 
     public override void SaveConfig()

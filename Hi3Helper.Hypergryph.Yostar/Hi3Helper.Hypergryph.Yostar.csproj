@@ -23,6 +23,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <ProjectReference Include="..\Hi3Helper.Hypergryph.Shared\Hi3Helper.Hypergryph.Shared.csproj"/>
         <ProjectReference Include="..\Hi3Helper.Plugin.Core\Hi3Helper.Plugin.Core.csproj"/>
     </ItemGroup>
 

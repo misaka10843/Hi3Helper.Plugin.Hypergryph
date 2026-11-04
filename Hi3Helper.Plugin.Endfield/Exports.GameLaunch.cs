@@ -15,12 +15,6 @@ namespace Hi3Helper.Plugin.Endfield;
 public partial class Exports
 {
     /// <summary>
-    ///     是否走「下载 / 选取官方启动器组件」那条路。当前为 false：游戏自带的文件已经够用，
-    ///     见 <see cref="GameDecoyParentBridge" />。官方启动器那套代码整体保留，改回 true 即可恢复。
-    /// </summary>
-    private static readonly bool AcquireOfficialLauncher = false;
-
-    /// <summary>
     ///     核心启动逻辑
     /// </summary>
     protected override (bool IsSupported, Task<bool> Task) LaunchGameFromGameManagerCoreAsync(
@@ -35,113 +29,28 @@ public partial class Exports
 
             if (context is not
                 {
-                    GameManager: HgGameManager manager, PresetConfig: PluginPresetConfigBase presetConfig
+                    GameManager: HgGameManager manager
                 }) return false;
 
             var gameDirectory = Path.GetDirectoryName(gameExecutablePath);
 
-            ParentProcessBridge? parent = null;
-
-            if (AcquireOfficialLauncher)
+            token.ThrowIfCancellationRequested();
+            using var parent = GameDecoyParentBridge.Create(gameExecutablePath,
+                Hi3Helper.Hypergryph.Shared.PluginConfiguration.For(manager).Read().ParentExecutablePath);
+            token.ThrowIfCancellationRequested();
+            using Process process = parent.StartGame(gameExecutablePath, startArgument, gameDirectory);
+            try
             {
-                try
-                {
-                    LauncherAcquireOutcome outcome = await OfficialLauncherProvider.EnsureAsync(manager,
-                        presetConfig.ProfileName, presetConfig.ZoneFullName, token);
-
-                    if (outcome.Status == LauncherAcquireStatus.Acquired)
-                    {
-                        InstanceLogger.LogInformation(
-                            "[Endfield::LaunchGame] The official launcher component has been prepared. Waiting for the user to start the game again.");
-                        return false;
-                    }
-
-                    if (outcome.Status == LauncherAcquireStatus.Unavailable)
-                    {
-                        InstanceLogger.LogError(
-                            "[Endfield::LaunchGame] The official launcher component is unavailable. The game cannot be started.");
-                        return false;
-                    }
-
-                    parent = outcome.Bridge;
-                }
-                catch (Exception e)
-                {
-                    InstanceLogger.LogError(e, "[Endfield::LaunchGame] Failed to acquire the official launcher.");
-                }
+                process.PriorityBoostEnabled = isRunBoosted;
+                process.PriorityClass = processPriority;
             }
-            else
+            catch (Exception e)
             {
-                parent = GameDecoyParentBridge.TryCreate(gameDirectory);
+                InstanceLogger.LogError(e, "[Endfield::LaunchGame] Failed to set process priority.");
             }
-
-            using (parent)
-            {
-                Process? process = null;
-
-                if (parent != null)
-                {
-                    try
-                    {
-                        process = parent.StartGame(gameExecutablePath, startArgument, gameDirectory);
-                    }
-                    catch (Exception e)
-                    {
-                        InstanceLogger.LogError(e,
-                            "[Endfield::LaunchGame] Failed to start the game through the parent process bridge.");
-                        parent.Dispose();
-                    }
-                }
-
-                process ??= StartGameDirectly(gameExecutablePath, startArgument, gameDirectory);
-
-                if (process == null) return false;
-
-                using (process)
-                {
-                    try
-                    {
-                        process.PriorityBoostEnabled = isRunBoosted;
-                        process.PriorityClass = processPriority;
-                    }
-                    catch (Exception e)
-                    {
-                        InstanceLogger.LogError(e, "[Endfield::LaunchGame] Failed to set process priority.");
-                    }
-
-                    _ = ReadGameLog(context, token);
-
-                    await process.WaitForExitAsync(token);
-
-                    return true;
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    ///     桥建不起来时的退路。游戏大概率会弹「请通过官方启动器打开游戏」，但至少不会卡住玩家。
-    /// </summary>
-    private static Process? StartGameDirectly(string executablePath, string? arguments, string? workingDirectory)
-    {
-        ProcessStartInfo startInfo = string.IsNullOrEmpty(arguments)
-            ? new ProcessStartInfo(executablePath)
-            : new ProcessStartInfo(executablePath, arguments);
-
-        startInfo.WorkingDirectory = workingDirectory;
-        startInfo.UseShellExecute = false;
-
-        try
-        {
-            Process? process = Process.Start(startInfo);
-            InstanceLogger.LogWarning(
-                "[Endfield::LaunchGame] Started the game without a parent process.");
-            return process;
-        }
-        catch (Exception e)
-        {
-            InstanceLogger.LogError(e, "[Endfield::LaunchGame] Failed to start the game directly.");
-            return null;
+            _ = ReadGameLog(context, token);
+            await process.WaitForExitAsync(token);
+            return true;
         }
     }
 

@@ -15,7 +15,6 @@ namespace Hi3Helper.Hypergryph.Yostar.Management;
 [GeneratedComClass]
 public partial class YostarGameManager : GameManagerBase
 {
-    internal const string ManualVerifyMarkerFileName = ".collapse_verify_game";
 
     private readonly YostarApiClient _apiClient;
     private readonly YostarLauncherOptions _options;
@@ -33,11 +32,7 @@ public partial class YostarGameManager : GameManagerBase
 
     protected override HttpClient ApiResponseHttpClient { get; set; } = new();
 
-    internal string? ManualVerifyMarkerPath => string.IsNullOrWhiteSpace(CurrentGameInstallPath)
-        ? null
-        : Path.Combine(CurrentGameInstallPath, ManualVerifyMarkerFileName);
-
-    internal bool IsManualVerifyRequested => ManualVerifyMarkerPath is { } markerPath && File.Exists(markerPath);
+    internal bool IsManualVerifyRequested => Hi3Helper.Hypergryph.Shared.PluginConfiguration.For(this).HasVerificationRequest;
 
     protected override bool IsInstalled
     {
@@ -66,21 +61,6 @@ public partial class YostarGameManager : GameManagerBase
         return _targetPackage;
     }
 
-    internal void CompleteManualVerifyRequest()
-    {
-        string? markerPath = ManualVerifyMarkerPath;
-        if (markerPath == null || !File.Exists(markerPath)) return;
-        try
-        {
-            File.Delete(markerPath);
-        }
-        catch (Exception ex)
-        {
-            SharedStatic.InstanceLogger.LogWarning(
-                $"[Yostar] Failed to remove manual verification marker: {ex.Message}");
-        }
-    }
-
     protected override async Task<int> InitAsync(CancellationToken token)
     {
         try
@@ -103,6 +83,7 @@ public partial class YostarGameManager : GameManagerBase
 
     protected override void SetGamePathInner(string gamePath)
     {
+        Hi3Helper.Hypergryph.Shared.PluginPaths.Migrate(gamePath);
         CurrentGameInstallPath = gamePath;
         _targetPackage = null;
         ReadLocalVersion();
@@ -123,6 +104,7 @@ public partial class YostarGameManager : GameManagerBase
     public override void LoadConfig()
     {
         ReadLocalVersion();
+        _ = IsManualVerifyRequested;
     }
 
     public override void SaveConfig()

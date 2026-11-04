@@ -61,6 +61,8 @@ BenchmarkDotNet.Artifacts/
 project.lock.json
 project.fragment.lock.json
 artifacts/
+# Per-installation plugin configuration and working data
+_Hi3_Hg/
 
 # ASP.NET Scaffolding
 ScaffoldingReadMe.txt

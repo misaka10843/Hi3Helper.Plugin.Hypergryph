@@ -2,7 +2,7 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
+using System.Security.Cryptography;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using Hi3Helper.Plugin.Core;
@@ -32,9 +32,6 @@ public abstract partial class ParentProcessBridge : IDisposable
     private static readonly Guid WinTrustActionGenericVerifyV2 =
         new("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
 
-    private static readonly string[] TrustedPublishers =
-        ["Hypergryph", "GRYPHLINE", "GRYPH FRONTIER"];
-
     private nint _suspendedProcess;
     private nint _suspendedThread;
     private bool _disposed;
@@ -57,6 +54,7 @@ public abstract partial class ParentProcessBridge : IDisposable
 
         nint attributeList = Marshal.AllocHGlobal(attributeListSize);
         nint commandLine   = nint.Zero;
+        bool attributesInitialized = false;
 
         try
         {
@@ -65,6 +63,7 @@ public abstract partial class ParentProcessBridge : IDisposable
                 throw new Win32Exception(Marshal.GetLastWin32Error(),
                     "InitializeProcThreadAttributeList failed.");
             }
+            attributesInitialized = true;
 
             unsafe
             {
@@ -94,7 +93,8 @@ public abstract partial class ParentProcessBridge : IDisposable
             }
 
             CloseHandle(processInformation.hThread);
-            return Process.GetProcessById(processInformation.dwProcessId);
+            try { return Process.GetProcessById(processInformation.dwProcessId); }
+            finally { CloseHandle(processInformation.hProcess); }
         }
         finally
         {
@@ -103,7 +103,7 @@ public abstract partial class ParentProcessBridge : IDisposable
                 Marshal.FreeCoTaskMem(commandLine);
             }
 
-            DeleteProcThreadAttributeList(attributeList);
+            if (attributesInitialized) DeleteProcThreadAttributeList(attributeList);
             Marshal.FreeHGlobal(attributeList);
         }
     }
@@ -144,42 +144,40 @@ public abstract partial class ParentProcessBridge : IDisposable
     {
     }
 
-    internal static bool TrySuspend(string executablePath, out nint process, out nint thread)
+    internal static (nint Process, nint Thread) Suspend(string executablePath)
     {
-        process = nint.Zero;
-        thread  = nint.Zero;
-
         STARTUPINFOEX startupInfo = default;
-        startupInfo.StartupInfo.cb = Marshal.SizeOf<STARTUPINFOEX>();
+        startupInfo.StartupInfo.cb = Marshal.SizeOf<STARTUPINFO>();
 
         if (!CreateProcess(executablePath, nint.Zero, nint.Zero, nint.Zero, false,
                 CreateSuspended | CreateNoWindow, nint.Zero, Path.GetDirectoryName(executablePath),
                 in startupInfo, out PROCESS_INFORMATION processInformation))
         {
             int error = Marshal.GetLastWin32Error();
-            SharedStatic.InstanceLogger.LogWarning(
-                $"[HgBridge] Cannot create a suspended parent process from {executablePath}: " +
-                $"{new Win32Exception(error).Message} ({error})");
-            return false;
+            throw new Win32Exception(error, $"无法从 {executablePath} 创建挂起父进程：{new Win32Exception(error).Message}");
         }
 
-        process = processInformation.hProcess;
-        thread  = processInformation.hThread;
-        return true;
+        return (processInformation.hProcess, processInformation.hThread);
     }
 
     /// <summary>
-    ///     The same judgement the client applies to its parent: a valid Authenticode
-    ///     signature from a Hypergryph entity. No version or hash comparison.
+    ///     Requires valid Authenticode signatures on both images and identical signer
+    ///     certificate fingerprints, without a hardcoded publisher-name whitelist.
     /// </summary>
-    internal static bool IsTrustedFile(string executablePath)
+    internal static bool HasMatchingSigner(string executablePath, string gameExecutablePath)
     {
         if (!File.Exists(executablePath))
         {
             return false;
         }
 
-        uint result = WinVerifyTrustFile(executablePath);
+        uint result = WinVerifyTrustFile(gameExecutablePath);
+        if (result != 0)
+        {
+            SharedStatic.InstanceLogger.LogError("[HgBridge] Game signature verification failed (0x{Result:x8}): {Path}", result, gameExecutablePath);
+            return false;
+        }
+        result = WinVerifyTrustFile(executablePath);
         if (result != 0)
         {
             SharedStatic.InstanceLogger.LogWarning(
@@ -190,16 +188,11 @@ public abstract partial class ParentProcessBridge : IDisposable
         try
         {
             using X509Certificate certificate = X509Certificate.CreateFromSignedFile(executablePath);
-            string subject = certificate.Subject;
-
-            if (TrustedPublishers.Any(publisher =>
-                    subject.Contains(publisher, StringComparison.OrdinalIgnoreCase)))
-            {
-                return true;
-            }
-
-            SharedStatic.InstanceLogger.LogWarning($"[HgBridge] Unexpected signer: {subject}");
-            return false;
+            using X509Certificate gameCertificate = X509Certificate.CreateFromSignedFile(gameExecutablePath);
+            bool matches = CryptographicOperations.FixedTimeEquals(
+                SHA256.HashData(certificate.GetRawCertData()), SHA256.HashData(gameCertificate.GetRawCertData()));
+            if (!matches) SharedStatic.InstanceLogger.LogError("[HgBridge] Parent signer differs from the game signer: {Path}", executablePath);
+            return matches;
         }
         catch (Exception ex)
         {

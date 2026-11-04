@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.IO;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -28,7 +29,7 @@ internal static class YostarCrc64
             ArrayPool<byte>.Shared.Return(buffer);
         }
 
-        return (~crc).ToString();
+        return (~crc).ToString(CultureInfo.InvariantCulture);
     }
 
     private static ulong Append(ulong crc, ReadOnlySpan<byte> data)
