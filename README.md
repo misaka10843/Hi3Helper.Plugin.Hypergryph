@@ -46,27 +46,25 @@ You can download the plugin via the [Official Collapse Launcher Website](https:/
 
 ## ✨ Features
 
-### ✅ Currently Supported
+- Version Detection: Automatically detects whether the client is up to date.
+- Information Retrieval: Automatically retrieves and displays official background images, banners, news, and announcements.
+- Game Management: Supports downloading, installing, launching, and detecting running game processes.
+- Game Updates: Supports updating the game.
+- Multi-Server Support: Supports managing and switching between multiple game servers.
+- Pre-download Support: Supports pre-downloading game updates before their official release.
+- Incremental Game Updates: Supports downloading and applying incremental updates to reduce download size. This feature is currently in beta and may cause update failures, errors, or file corruption. Please back up your game files before updating.
+- Integrity Verification: Automatically verifies game file integrity and performs repairs after updates.
+- Manual Integrity Check: Allows users to manually verify game file integrity and repair corrupted or missing files.
+- Social Media Panel: Integrates official social media feeds to display the latest updates and announcements.
+- In-launcher Game Settings: Allows users to configure game settings directly within the launcher, without needing to launch the game first.
 
-- **Version Detection**: Automatically detects if the client version is up to date.
-- **Information Retrieval**: Automatically pulls and displays official background images, banners, and the latest
-  news/announcements.
-- **Game Management**: Supports complete game downloading, installation, launching, and process detection.
-- **Game Update**: Supports updating the game.
-- **Multi-Server Support**
-- **Incremental Game Updates**: Current incremental game update is a beta feature, which may lead to update
-  failures/errors/file corruption. Please back up game files before updating.
-- **Integrity Verification**: Automatically performs integrity verification and game repair after an update.
+>[!IMPORTANT]
+>You can now specify which EXE file should be bypassed when using “Open the game via official launcher”, allowing you to manually trigger game integrity verification. Simply configure the corresponding option in the plugin settings.
 
-### 🚧 Development Plan / ToDo
+<img width="1279" height="723" alt="image" src="https://github.com/user-attachments/assets/c7162e30-4117-4f19-b77f-6c68a45065b3" />
+<img width="1315" height="722" alt="image" src="https://github.com/user-attachments/assets/cada8ebe-db7d-4cde-92c4-f1d187b89430" />
 
-- [x] **Pre-download Support**: Awaiting the official launcher to implement relevant interfaces.
-- [ ] **Manual Integrity Check**: Collapse Launcher does not seem to provide relevant API interfaces for manual
-  verification; awaiting upstream updates.
-- [ ] **Social Media Panel**: Integrate official social media feed displays (Basic support exists, but currently
-  disabled as icons cannot be retrieved via API).
-- [x] **Incremental Game Updates**: Awaiting official Collapse support for incremental updates; will begin coding
-  related functions once supported.
+
 
 -----
 
