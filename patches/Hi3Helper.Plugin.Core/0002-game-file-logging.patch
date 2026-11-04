@@ -1,0 +1,90 @@
+diff --git a/Management/GameManagerBase.cs b/Management/GameManagerBase.cs
+index 9c4b48a..ad54dcf 100644
+--- a/Management/GameManagerBase.cs
++++ b/Management/GameManagerBase.cs
+@@ -113,5 +113,7 @@ public abstract partial class GameManagerBase : LauncherApiBase, IGameManager
+     {
+         CurrentGameInstallPath = gamePath;
++        SharedLogger.SetGamePath(gamePath);
+         SetGamePathInner(gamePath);
++        SharedStatic.InstanceLogger.LogInformation("[PluginLog] Game path set: {GamePath}", gamePath);
+     }
+
+diff --git a/SharedLogger.cs b/SharedLogger.cs
+index ceb1285..b977b19 100644
+--- a/SharedLogger.cs
++++ b/SharedLogger.cs
+@@ -1,5 +1,7 @@
+ ﻿using Microsoft.Extensions.Logging;
+ using System;
++using System.IO;
+ using System.Runtime.InteropServices.Marshalling;
++using System.Text;
+
+ #pragma warning disable CS8500
+@@ -8,15 +10,61 @@ namespace Hi3Helper.Plugin.Core;
+ internal class SharedLogger : ILogger
+ {
+-    public unsafe void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
++    private static readonly object FileLock = new();
++    private static string? _gamePath;
++    private static bool _reportedFileFailure;
++    private const long MaxLogBytes = 5 * 1024 * 1024;
++
++    internal static void SetGamePath(string? path)
+     {
+-        if (SharedStatic.InstanceLoggerCallback == null)
++        lock (FileLock)
+         {
+-            return;
++            if (!string.Equals(_gamePath, path, StringComparison.OrdinalIgnoreCase)) _reportedFileFailure = false;
++            _gamePath = string.IsNullOrWhiteSpace(path) ? null : path;
+         }
++    }
+
++    private static void WriteFile(LogLevel level, string message)
++    {
++        if (level < LogLevel.Information || level == LogLevel.None) return;
++        lock (FileLock)
++        {
++            try
++            {
++                // Never create the game root: it may have been removed by uninstall.
++                if (_gamePath == null || !Directory.Exists(_gamePath)) return;
++                string directory = Path.Combine(_gamePath, "_Hi3_Hg", "logs");
++                Directory.CreateDirectory(directory);
++                string path = Path.Combine(directory, "plugin.log");
++                if (File.Exists(path) && new FileInfo(path).Length >= MaxLogBytes)
++                    File.Move(path, path + ".1", true);
++                using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
++                using var writer = new StreamWriter(stream, new UTF8Encoding(false));
++                writer.WriteLine($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [{level}] {message}");
++            }
++            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
++            {
++                if (!_reportedFileFailure)
++                {
++                    _reportedFileFailure = true;
++                    WriteHost(LogLevel.Warning, default, $"[PluginLog] Cannot write log under {_gamePath}: {ex.Message}");
++                }
++            }
++        }
++    }
++
++    public unsafe void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
++    {
+         string formattedString = exception != null ? formatter(state, exception) + "\r\n" + exception : formatter(state, exception);
++        WriteFile(logLevel, formattedString);
++        WriteHost(logLevel, eventId, formattedString);
++    }
++
++    private static unsafe void WriteHost(LogLevel logLevel, EventId eventId, string formattedString)
++    {
++        var callback = SharedStatic.InstanceLoggerCallback;
++        if (callback == null) return;
+         fixed (char* formatterStrP = &Utf16StringMarshaller.GetPinnableReference(formattedString))
+         {
+-            SharedStatic.InstanceLoggerCallback(&logLevel, &eventId, formatterStrP, formattedString.Length);
++            callback(&logLevel, &eventId, formatterStrP, formattedString.Length);
+         }
+     }
