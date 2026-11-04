@@ -57,8 +57,16 @@ function Convert-PreferenceValue {
     $state = [ordered]@{ kind = $kind.ToString() }
     switch ($kind.ToString()) {
         'DWord' {
-            $state.value = ([int]$value).ToString([Globalization.CultureInfo]::InvariantCulture)
-            $state.hex = '0x' + ([BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$value), 0)).ToString('X8')
+            # Unity can store eight bytes under REG_DWORD; .NET returns Int64 in that case.
+            $state.value = $value.ToString([Globalization.CultureInfo]::InvariantCulture)
+            if ($value -is [long]) {
+                $state.byteLength = 8
+                $state.hex = '0x' + ([BitConverter]::ToUInt64([BitConverter]::GetBytes([long]$value), 0)).ToString('X16')
+                $state.float64Interpretation = [BitConverter]::Int64BitsToDouble([long]$value).ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+            }
+            else {
+                $state.hex = '0x' + ([BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$value), 0)).ToString('X8')
+            }
         }
         'QWord' { $state.value = ([long]$value).ToString([Globalization.CultureInfo]::InvariantCulture) }
         'MultiString' {
@@ -187,7 +195,23 @@ function Invoke-CaptureSelfTest {
         $key.SetValue('input_counter', [long]::MaxValue, [Microsoft.Win32.RegistryValueKind]::QWord)
         $key.SetValue('input_path', '%USERPROFILE%', [Microsoft.Win32.RegistryValueKind]::ExpandString)
         $key.SetValue('audio_languages', [string[]]@('English', '日本語'), [Microsoft.Win32.RegistryValueKind]::MultiString)
+        if (-not ('SettingsCaptureNativeTest' -as [type])) {
+            Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class SettingsCaptureNativeTest {
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    public static extern int RegSetValueEx(IntPtr key, string name, int reserved, int type, byte[] data, int size);
+}
+'@
+        }
+        $bits = [BitConverter]::GetBytes([double]0.5)
+        $errorCode = [SettingsCaptureNativeTest]::RegSetValueEx($key.Handle.DangerousGetHandle(), 'audio_unity_float', 0, 4, $bits, 8)
+        if ($errorCode -ne 0) { throw "Cannot create Unity regression fixture: $errorCode" }
         $extra = Get-PreferenceSnapshot
+        $unityFloat = $extra[$relative + [char]0 + 'audio_unity_float'].state
+        if ($unityFloat.kind -ne 'DWord' -or $unityFloat.value -ne '4602678819172646912' -or
+            $unityFloat.byteLength -ne 8 -or $unityFloat.float64Interpretation -ne '0.5') { throw 'Unity eight-byte REG_DWORD regression failed.' }
         if ($extra[$relative + [char]0 + 'audio_empty'].state.base64 -ne '' -or
             -not $extra[$relative + [char]0 + 'audio_large'].state.omitted -or
             $extra[$relative + [char]0 + 'input_counter'].state.value -ne '9223372036854775807' -or
