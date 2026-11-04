@@ -48,6 +48,48 @@ public class HgGameRepairer
         File.Delete(filePath);
     }
 
+    private string ResolvePath(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath) || relativePath.Contains(':'))
+            throw new InvalidDataException($"Invalid repair manifest path: {relativePath}");
+        string[] segments = relativePath.Replace('\\', '/').Split('/');
+        if (segments.Any(segment => string.IsNullOrWhiteSpace(segment) || segment is "." or ".." ||
+                segment != segment.TrimEnd(' ', '.') || segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) ||
+            segments[0].Equals("_Hi3_Hg", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"Invalid repair manifest path: {relativePath}");
+        string root = Path.GetFullPath(_installPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        string result = Path.GetFullPath(Path.Combine(root, Path.Combine(segments)));
+        if (!result.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"Repair path escapes the game directory: {relativePath}");
+        string current = root;
+        foreach (string segment in segments)
+        {
+            current = Path.Combine(current, segment);
+            try
+            {
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException($"Repair path contains a link: {relativePath}");
+            }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
+        }
+        return result;
+    }
+
+    private async Task CommitVerifiedDownloadAsync(HgManifestNode node, CancellationToken token)
+    {
+        string targetPath = ResolvePath(node.Path!);
+        string tempPath = ResolvePath(node.Path! + ".tmp");
+        if (new FileInfo(tempPath).Length != node.Size || !await CheckMd5Async(tempPath, node.Md5!, token).ConfigureAwait(false))
+        {
+            ForceDeleteFile(tempPath);
+            throw new InvalidDataException($"[HgRepairer] Downloaded file failed verification: {node.Path}");
+        }
+        token.ThrowIfCancellationRequested();
+        if (File.Exists(targetPath)) File.SetAttributes(targetPath, FileAttributes.Normal);
+        File.Move(tempPath, targetPath, true);
+    }
+
     public async Task StartRepairAsync(InstallProgressDelegate? progressDelegate,
         InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
     {
@@ -83,7 +125,7 @@ public class HgGameRepairer
 
         Report(InstallProgressState.Preparing);
 
-        var localManifestPath = Path.Combine(_installPath, "game_files");
+        var localManifestPath = ResolvePath("game_files");
         byte[]? encryptedManifest = null;
 
         if (File.Exists(localManifestPath))
@@ -126,6 +168,7 @@ public class HgGameRepairer
         }
 
         var manifestNodes = new List<HgManifestNode>();
+        var manifestPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         using (var reader = new StringReader(decryptedManifest))
         {
             string? line;
@@ -138,13 +181,17 @@ public class HgGameRepairer
                     if (node != null && !string.IsNullOrEmpty(node.Path))
                     {
                         if (node.Path.Equals("config.ini", StringComparison.OrdinalIgnoreCase)) continue;
-
+                        if (node.Size < 0 || node.Md5?.Length != 32 || !node.Md5.All(Uri.IsHexDigit))
+                            throw new InvalidDataException($"Invalid verification manifest entry: {node.Path}");
+                        if (!manifestPaths.Add(ResolvePath(node.Path)))
+                            throw new InvalidDataException($"Duplicate verification manifest path: {node.Path}");
                         manifestNodes.Add(node);
                     }
+                    else throw new InvalidDataException("Verification manifest entry has no path.");
                 }
-                catch (Exception ex)
+                catch (JsonException ex)
                 {
-                    SharedStatic.InstanceLogger.LogDebug($"[HgRepairer] JSON line parse skipped: {ex.Message}");
+                    throw new InvalidDataException("Invalid JSON in the verification manifest.", ex);
                 }
             }
         }
@@ -171,9 +218,7 @@ public class HgGameRepairer
             async (node, innerToken) =>
             {
                 var isOk = false;
-                var localPath = Path.Combine(
-                    _installPath,
-                    node.Path!.Replace("/", "\\"));
+                var localPath = ResolvePath(node.Path!);
 
                 if (File.Exists(localPath))
                 {
@@ -243,8 +288,8 @@ public class HgGameRepairer
             new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = token }, async (node, innerToken) =>
             {
                 var downloadUrl = $"{baseUrl}/{node.Path}";
-                var targetPath = Path.Combine(_installPath, node.Path!.Replace("/", "\\"));
-                var tempPath = targetPath + ".tmp";
+                var targetPath = ResolvePath(node.Path!);
+                var tempPath = ResolvePath(node.Path! + ".tmp");
 
                 Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
 
@@ -254,8 +299,7 @@ public class HgGameRepairer
                     Report(InstallProgressState.Download);
                 });
 
-                ForceDeleteFile(targetPath); // 强制删除旧文件，无视只读
-                File.Move(tempPath, targetPath);
+                await CommitVerifiedDownloadAsync(node, innerToken).ConfigureAwait(false);
 
                 Interlocked.Increment(ref progress.DownloadedCount);
                 Interlocked.Increment(ref progress.StateCount);
@@ -276,21 +320,11 @@ public class HgGameRepairer
         await Parallel.ForEachAsync(downloadList,
             new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = token }, async (node, innerToken) =>
             {
-                var targetPath = Path.Combine(_installPath, node.Path!.Replace("/", "\\"));
+                var targetPath = ResolvePath(node.Path!);
 
                 var md5Match = await CheckMd5Async(targetPath, node.Md5!, innerToken);
                 if (!md5Match)
                 {
-                    try
-                    {
-                        ForceDeleteFile(targetPath);
-                    }
-                    catch (Exception ex)
-                    {
-                        SharedStatic.InstanceLogger.LogDebug(
-                            $"[HgRepairer] Target file delete failed: {ex.Message}");
-                    }
-
                     throw new Exception($"[HgRepairer] MD5 mismatch after downloading {node.Path}");
                 }
 
