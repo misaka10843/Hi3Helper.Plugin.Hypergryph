@@ -1,10 +1,3 @@
-> [!CAUTION]
-> Please upgrade the plugin to version 1.1.0 or higher immediately!
-> 
-> It has been confirmed that all older versions below 1.1.0 suffer from a critical update bug. Issues within `SharpHDiffPatch.Core` prevent the plugin from performing effective patching, which in turn triggers the client to re-download approximately 30GB of data from the server.
-> 
-> This issue has been fully resolved in version 1.1.0. To avoid unnecessary bandwidth consumption and long download times, please be sure to update your plugin immediately!
-
 <p align="center">
   <img width="512px" height="auto" src="./.github/assets/CollapseLauncherIdolType.png"/>
 </p>
@@ -43,6 +36,8 @@ You can download the plugin via the [Official Collapse Launcher Website](https:/
 >Self-update is currently unstable. Please perform a manual update by downloading the latest release. A fix is in development and will be implemented in the next version.
 
 **If this plugin helps you, consider giving it a ⭐!**
+
+need find other game plugins? see [Azurpromilia](https://github.com/misaka10843/Hi3Helper.Plugin.Azurpromilia)/[StellaSora](https://github.com/misaka10843/Hi3Helper.Plugin.StellaSora)
 
 ## ✨ Features
 
