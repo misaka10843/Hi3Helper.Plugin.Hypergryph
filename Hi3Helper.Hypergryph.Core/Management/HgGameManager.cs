@@ -103,7 +103,7 @@ public partial class HgGameManager : GameManagerBase
         {
             if (!IsInstalled) return false;
 
-            return IsManualVerifyRequested || CurrentGameVersion != ApiGameVersion;
+            return IsManualVerifyRequested || (ApiGameVersion != GameVersion.Empty && CurrentGameVersion != ApiGameVersion);
         }
     }
 
@@ -137,7 +137,8 @@ public partial class HgGameManager : GameManagerBase
             ++_fullRefresh;
             _latestGameInfo = null;
             _fullResourceBaseUrl = null;
-            CurrentGameVersion = GameVersion.Empty;
+            string localVersion = ReadLocalVersion(gamePath);
+            CurrentGameVersion = GameVersion.TryParse(localVersion, out var version) ? version : GameVersion.Empty;
             ApiGameVersion = GameVersion.Empty;
             ApiPreloadGameVersion = GameVersion.Empty;
             IsInitialized = false;
@@ -158,20 +159,7 @@ public partial class HgGameManager : GameManagerBase
             refresh = requestFullPackage ? ++_fullRefresh : ++_normalRefresh;
         }
 
-        string requestVersion = "";
-        if (!requestFullPackage && !string.IsNullOrEmpty(gamePath))
-        {
-            try
-            {
-                string configPath = Path.Combine(gamePath, "config.ini");
-                if (File.Exists(configPath))
-                    requestVersion = ConfigTool.ParseVersion(ConfigTool.ReadConfig(configPath)) ?? "";
-            }
-            catch (Exception ex)
-            {
-                SharedStatic.InstanceLogger.LogError(ex, "[HgCore] Failed to read the local version.");
-            }
-        }
+        string requestVersion = requestFullPackage ? "" : ReadLocalVersion(gamePath);
 
         var requestBody = new HgBatchRequest
         {
@@ -221,7 +209,7 @@ public partial class HgGameManager : GameManagerBase
                 }
                 else
                 {
-                    CurrentGameVersion = string.IsNullOrEmpty(requestVersion) ? GameVersion.Empty : new GameVersion(requestVersion);
+                    CurrentGameVersion = GameVersion.TryParse(requestVersion, out var version) ? version : GameVersion.Empty;
                     ApiGameVersion = string.IsNullOrEmpty(latest.Version) ? GameVersion.Empty : new GameVersion(latest.Version);
                     ApiPreloadGameVersion = string.IsNullOrEmpty(latest.PrePatch?.Version)
                         ? GameVersion.Empty : new GameVersion(latest.PrePatch.Version);
@@ -238,6 +226,22 @@ public partial class HgGameManager : GameManagerBase
         }
 
         return 0;
+    }
+
+    private string ReadLocalVersion(string? gamePath)
+    {
+        if (string.IsNullOrEmpty(gamePath) || !File.Exists(Path.Combine(gamePath, CurrentGameExecutableByPreset)))
+            return "";
+        try
+        {
+            string configPath = Path.Combine(gamePath, "config.ini");
+            return File.Exists(configPath) ? ConfigTool.ParseVersion(ConfigTool.ReadConfig(configPath)) ?? "" : "";
+        }
+        catch (Exception ex)
+        {
+            SharedStatic.InstanceLogger.LogError(ex, "[HgCore] Failed to read the local version.");
+            return "";
+        }
     }
 
     protected override Task<int> InitAsync(CancellationToken token)
