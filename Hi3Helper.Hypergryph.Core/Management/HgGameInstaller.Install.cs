@@ -973,17 +973,9 @@ public partial class HgGameInstaller
                 var targetDir = Path.GetDirectoryName(targetPath)!;
                 Directory.CreateDirectory(targetDir);
 
-                var temporary = Path.Combine(targetDir, $".hg-stage-{Guid.NewGuid():N}.tmp");
-                try
-                {
-                    File.Copy(stagedFile.Source, temporary);
-                    if (new FileInfo(temporary).Length != fileSize)
-                        throw new IOException($"Incomplete staged file: {stagedFile.RelativePath}");
-                    token.ThrowIfCancellationRequested();
-                    InstallPath.Resolve(targetRoot, stagedFile.RelativePath);
-                    InstallPath.ReplaceVerifiedFile(temporary, targetPath);
-                }
-                finally { File.Delete(temporary); }
+                InstallPath.RejectLink(stagedFile.Source);
+                InstallPath.Resolve(targetRoot, stagedFile.RelativePath);
+                InstallPath.ReplaceVerifiedFile(stagedFile.Source, targetPath, sameVolumeOnly: true);
 
                 committedBytes += fileSize;
                 committedCount++;

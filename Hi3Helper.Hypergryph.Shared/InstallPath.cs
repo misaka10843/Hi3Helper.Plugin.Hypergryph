@@ -1,10 +1,12 @@
 using System;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 
 namespace Hi3Helper.Hypergryph.Shared;
 
-internal static class InstallPath
+internal static partial class InstallPath
 {
     internal static string Resolve(string gameRoot, string relativePath)
     {
@@ -46,18 +48,18 @@ internal static class InstallPath
         catch (DirectoryNotFoundException) { }
     }
 
-    internal static void ReplaceVerifiedFile(string temporary, string target)
+    internal static void ReplaceVerifiedFile(string temporary, string target, bool sameVolumeOnly = false)
     {
         if (!File.Exists(target))
         {
-            File.Move(temporary, target);
+            MoveVerifiedFile(temporary, target, overwrite: false, sameVolumeOnly);
             return;
         }
 
         FileAttributes attributes = File.GetAttributes(target);
         bool readOnly = (attributes & FileAttributes.ReadOnly) != 0;
         if (readOnly) File.SetAttributes(target, attributes & ~FileAttributes.ReadOnly);
-        try { File.Move(temporary, target, true); }
+        try { MoveVerifiedFile(temporary, target, overwrite: true, sameVolumeOnly); }
         catch (Exception replacementError)
         {
             try { if (readOnly) File.SetAttributes(target, attributes); }
@@ -68,4 +70,31 @@ internal static class InstallPath
             throw;
         }
     }
+
+    private static void MoveVerifiedFile(string source, string target, bool overwrite, bool sameVolumeOnly)
+    {
+        if (!sameVolumeOnly)
+        {
+            File.Move(source, target, overwrite);
+            return;
+        }
+
+        const uint replaceExisting = 1;
+        if (MoveFileEx(ExtendedWindowsPath(source), ExtendedWindowsPath(target), overwrite ? replaceExisting : 0) == 0)
+        {
+            var error = new Win32Exception(Marshal.GetLastPInvokeError());
+            throw new IOException($"Could not move staged file to {target}: {error.Message}", error);
+        }
+    }
+
+    private static string ExtendedWindowsPath(string path)
+    {
+        if (path.StartsWith(@"\\?\", StringComparison.Ordinal) || path.StartsWith(@"\\.\", StringComparison.Ordinal))
+            return path;
+        return path.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + path[2..] : @"\\?\" + path;
+    }
+
+    [LibraryImport("kernel32.dll", EntryPoint = "MoveFileExW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial int MoveFileEx(string source, string target, uint flags);
 }
