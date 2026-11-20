@@ -1,5 +1,8 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using Hi3Helper.Plugin.Core;
 
 namespace Hi3Helper.Hypergryph.Shared;
@@ -8,6 +11,11 @@ namespace Hi3Helper.Hypergryph.Shared;
 public static unsafe class PluginDiagnostics
 {
     private static readonly object Gate = new();
+    private const string LogTimestampFormat = "yyyyMMdd'T'HHmmss.fffffff'Z'";
+    private const int RetainedSessions = 3;
+    private static readonly HashSet<string> SessionFiles = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Encoding LogEncoding = new UTF8Encoding(false);
+    private static readonly string SessionFileName = GetSessionFileName();
     private static bool _initialized;
     private static string? _gamePath;
     private static bool _reportedFailure;
@@ -34,8 +42,9 @@ public static unsafe class PluginDiagnostics
         Initialize();
         lock (Gate)
         {
-            if (!string.Equals(_gamePath, path, StringComparison.OrdinalIgnoreCase)) _reportedFailure = false;
-            _gamePath = string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path);
+            string? fullPath = string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path);
+            if (!string.Equals(_gamePath, fullPath, StringComparison.OrdinalIgnoreCase)) _reportedFailure = false;
+            _gamePath = fullPath;
         }
     }
 
@@ -60,12 +69,7 @@ public static unsafe class PluginDiagnostics
                 {
                     try
                     {
-                        string directory = PluginPaths.In(_gamePath, "logs");
-                        Directory.CreateDirectory(directory);
-                        string file = Path.Combine(directory, "plugin.log");
-                        if (File.Exists(file) && new FileInfo(file).Length >= 5 * 1024 * 1024) File.Move(file, file + ".1", true);
-                        using var writer = new StreamWriter(new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.Read), new System.Text.UTF8Encoding(false));
-                        writer.WriteLine($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [{(Microsoft.Extensions.Logging.LogLevel)(*level)}] {new string(message, 0, length)}");
+                        WriteSessionLog(_gamePath, *level, new ReadOnlySpan<char>(message, length));
                     }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
                     {
@@ -82,6 +86,63 @@ public static unsafe class PluginDiagnostics
             }
         }
         catch (Exception) { /* A logger callback must never terminate the native caller. */ }
+    }
+
+    private static string GetSessionFileName()
+    {
+        using var process = Process.GetCurrentProcess();
+        string stamp = process.StartTime.ToUniversalTime().ToString(LogTimestampFormat, CultureInfo.InvariantCulture);
+        return $"plugin-{stamp}-{Environment.ProcessId.ToString(CultureInfo.InvariantCulture)}.log";
+    }
+
+    private static void WriteSessionLog(string gamePath, int level, ReadOnlySpan<char> message)
+    {
+        string directory = PluginPaths.In(gamePath, "logs");
+        string file = InstallPath.Resolve(directory, SessionFileName);
+        bool firstWrite = !SessionFiles.Contains(file);
+        if (firstWrite) Directory.CreateDirectory(directory);
+
+        try
+        {
+            using var stream = new FileStream(file, firstWrite ? FileMode.OpenOrCreate : FileMode.Open,
+                FileAccess.Write, FileShare.Read | FileShare.Delete);
+            stream.Seek(0, SeekOrigin.End);
+            using var writer = new StreamWriter(stream, LogEncoding);
+            writer.Write($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [{(Microsoft.Extensions.Logging.LogLevel)level}] ");
+            writer.WriteLine(message);
+        }
+        catch (FileNotFoundException) when (!firstWrite) { return; }
+
+        if (firstWrite)
+        {
+            PruneSessionLogs(directory);
+            SessionFiles.Add(file);
+        }
+    }
+
+    internal static void PruneSessionLogs(string directory)
+    {
+        var sessions = Directory.EnumerateFiles(directory, "plugin-*.log", new EnumerationOptions
+            { AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = false })
+            .Where(path => IsSessionLog(Path.GetFileName(path)))
+            .OrderByDescending(path => path, StringComparer.Ordinal)
+            .Skip(RetainedSessions)
+            .ToArray();
+
+        foreach (string file in sessions) File.Delete(file);
+    }
+
+    private static bool IsSessionLog(string name)
+    {
+        const string prefix = "plugin-";
+        const string suffix = ".log";
+        if (!name.StartsWith(prefix, StringComparison.Ordinal) || !name.EndsWith(suffix, StringComparison.Ordinal))
+            return false;
+        ReadOnlySpan<char> value = name.AsSpan(prefix.Length, name.Length - prefix.Length - suffix.Length);
+        int separator = value.LastIndexOf('-');
+        return separator > 0 &&
+               DateTime.TryParseExact(value[..separator], LogTimestampFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out _) &&
+               int.TryParse(value[(separator + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out int pid) && pid > 0;
     }
 
     private static void Forward(int* level, void* eventId, char* text, int length)
