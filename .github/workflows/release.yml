@@ -146,6 +146,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
+          & ./.github/scripts/Invoke-PluginRelease.ps1 -Action CheckTags -Plan $env:PLAN -Revision $env:SOURCE_SHA
           foreach ($item in @($env:PLAN | ConvertFrom-Json)) {
             $tag = "$($item.short)@v$($item.version)"
             $notes = "./release-artifacts/release-$($item.short)/notes.md"

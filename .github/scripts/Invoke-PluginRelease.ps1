@@ -1,7 +1,7 @@
 #requires -Version 7.0
 [CmdletBinding()]
 param(
-    [ValidateSet('Plan', 'Notes', 'Stage', 'Collect', 'Bump', 'Library')] [string] $Action,
+    [ValidateSet('Plan', 'Notes', 'Stage', 'Collect', 'Bump', 'CheckTags', 'Library')] [string] $Action,
     [string] $Selection = 'all', [string] $EndfieldVersion, [string] $ArknightsVersion,
     [string] $Short, [string] $Version, [string] $Revision = 'HEAD',
     [string] $Source, [string] $Destination, [string] $Plan
@@ -42,6 +42,23 @@ function Read-Plan([string] $Json) {
         $seen[$item.short] = $true
     }
     return $items
+}
+
+function Assert-StableTags([string] $Json, [string] $Commit, [string] $Remote) {
+    $expected = (Invoke-Git @('rev-parse', '--verify', "$Commit^{commit}"))[0]
+    foreach ($item in Read-Plan $Json) {
+        $ref = "refs/tags/$($item.short)@v$($item.version)"
+        $refs = Invoke-Git @('ls-remote', '--tags', $Remote, $ref, "$ref^{}")
+        $targets = @{}
+        foreach ($line in $refs) {
+            $sha, $name = $line -split "`t", 2
+            $targets[$name] = $sha
+        }
+        $target = $targets["$ref^{}"] ?? $targets[$ref]
+        if ($target -and $target -ne $expected) {
+            throw "Stable tag $ref points to $target, expected $expected."
+        }
+    }
 }
 
 function New-Plan {
@@ -178,6 +195,7 @@ function Bump-Versions([string] $Json) {
 }
 
 switch ($Action) {
+    'CheckTags' { Assert-StableTags $Plan $Revision 'origin' }
     'Plan' { $json = New-Plan; $json; if ($env:GITHUB_OUTPUT) { "matrix=$json" >> $env:GITHUB_OUTPUT } }
     'Notes' { [IO.File]::WriteAllText([IO.Path]::GetFullPath($Destination), (New-Notes $Short $Version $Revision), [Text.UTF8Encoding]::new($false)) }
     'Stage' { Stage-Payload $Source $Destination $Short }

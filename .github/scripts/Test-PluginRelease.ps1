@@ -66,8 +66,19 @@ try {
     Assert ($arkNotes -match 'Arknights@v1.1.0') 'Arknights tag boundary was not isolated.'
     $null = Invoke-Git @('tag', 'Endfield@v1.2.0')
     Assert ((New-Notes 'Endfield' '1.2.0' 'HEAD') -match 'new graphics settings') 'Rerunning the same tag lost its changelog.'
+    $null = Invoke-Git @('tag', '-a', 'Arknights@v1.2.0', '-m', 'Annotated test tag')
+    $Selection = 'all'; $EndfieldVersion = '1.2.0'; $ArknightsVersion = '1.2.0'
+    $tagPlan = New-Plan
+    Assert-StableTags $tagPlan 'HEAD' '.'
+    $checks++
     Commit-File 'next.txt' 'fix: next change'
     Assert-Throws { New-Notes 'Endfield' '1.2.0' 'HEAD' }
+    Assert-Throws { Assert-StableTags $tagPlan 'HEAD' '.' } 'Stable tag'
+    $EndfieldVersion = '1.3.0'
+    Assert-Throws { Assert-StableTags (New-Plan) 'HEAD' '.' } 'Arknights@v1.2.0'
+    $ArknightsVersion = '1.3.0'
+    Assert-StableTags (New-Plan) 'HEAD' '.'
+    $checks++
 
     $artifacts = Join-Path $sandbox 'artifacts'
     $target = Join-Path $sandbox 'target'
