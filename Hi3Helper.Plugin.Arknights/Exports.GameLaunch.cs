@@ -61,7 +61,7 @@ public partial class Exports
 
         if (!TryGetGameExecutablePath(context, out var gameExecutablePath)) return true;
 
-        using var process = FindExecutableProcess(gameExecutablePath);
+        using var process = Hi3Helper.Hypergryph.Shared.GameProcess.FindExecutable(gameExecutablePath);
         if (process != null)
         {
             isGameRunning = true;
@@ -83,7 +83,7 @@ public partial class Exports
         {
             if (!TryGetGameExecutablePath(context, out var gameExecutablePath)) return true;
 
-            using var process = FindExecutableProcess(gameExecutablePath);
+            using var process = Hi3Helper.Hypergryph.Shared.GameProcess.FindExecutable(gameExecutablePath);
             if (process != null)
                 await process.WaitForExitAsync(token);
 
@@ -102,7 +102,7 @@ public partial class Exports
 
         if (!TryGetGameExecutablePath(context, out var gameExecutablePath)) return true;
 
-        using var process = FindExecutableProcess(gameExecutablePath);
+        using var process = Hi3Helper.Hypergryph.Shared.GameProcess.FindExecutable(gameExecutablePath);
         if (process == null) return true;
 
         wasGameRunning = true;
@@ -111,27 +111,6 @@ public partial class Exports
         return true;
     }
 
-    private static Process? FindExecutableProcess(string? executablePath)
-    {
-        if (executablePath == null) return null;
-
-        var executableDirPath = Path.GetDirectoryName(executablePath.AsSpan());
-        var executableName = Path.GetFileNameWithoutExtension(executablePath);
-
-        var processes = Process.GetProcessesByName(executableName);
-        Process? returnProcess = null;
-
-        foreach (var process in processes)
-            if (process.MainModule?.FileName.StartsWith(executableDirPath, StringComparison.OrdinalIgnoreCase) ?? false)
-            {
-                returnProcess = process;
-                break;
-            }
-
-        foreach (var process in processes.Where(x => x != returnProcess)) process.Dispose();
-
-        return returnProcess;
-    }
 
     private static bool TryGetGameExecutablePath(GameManagerExtension.RunGameFromGameManagerContext context,
         [NotNullWhen(true)] out string? gameExecutablePath)
