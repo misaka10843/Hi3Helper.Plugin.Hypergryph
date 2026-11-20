@@ -28,9 +28,8 @@ public static class PluginSettings
         var store = PluginConfiguration.For(manager);
         var options = store.Read();
         manager.GetGamePath(out string? path);
-        Drafts.Remove(preset);
         var display = ReadPreferences(preset);
-        Drafts.Add(preset, new(manager, store, options, store.Snapshot, path!, display));
+        Drafts.AddOrUpdate(preset, new(manager, store, options, store.Snapshot, path!, display));
         var entries = new List<GameSettingEntry>
         {
             GameSettingEntry.Toggle("manualVerificationRequested", Get(SettingsText.Verification), false)
@@ -76,12 +75,20 @@ public static class PluginSettings
             if (!string.Equals(Path.GetExtension(source), ".exe", StringComparison.OrdinalIgnoreCase) || !File.Exists(source))
                 throw new FileNotFoundException(Get(SettingsText.ParentFileMissing), source);
         }
+        draft.Store.ValidateApply(draft.Options, draft.Snapshot);
         if (OperatingSystem.IsWindows()) draft.Display?.Apply();
-        try { draft.Store.Apply(draft.Options, draft.Snapshot); }
-        catch { if (OperatingSystem.IsWindows()) draft.Display?.Restore(); throw; }
+        try
+        {
+            draft.Store.Apply(draft.Options, draft.Snapshot);
+        }
+        catch (Exception applyError)
+        {
+            try { if (OperatingSystem.IsWindows()) draft.Display?.Restore(); }
+            catch (Exception restoreError) { throw new AggregateException(applyError.Message, applyError, restoreError); }
+            throw;
+        }
         // The host keeps its existing controls after Apply; clear the one-shot value in the draft too.
-        Drafts.Remove(preset);
-        Drafts.Add(preset, draft with
+        Drafts.AddOrUpdate(preset, draft with
         {
             Snapshot = draft.Store.Snapshot,
             Display = ReadPreferences(preset)

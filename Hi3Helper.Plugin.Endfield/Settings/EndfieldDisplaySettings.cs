@@ -29,6 +29,7 @@ public sealed partial class EndfieldDisplaySettings : IGamePreferences
     };
     private readonly Dictionary<string, long> _original;
     private readonly Dictionary<string, long> _values;
+    private readonly List<(string Name, long Value)> _written = [];
     private readonly string _registryPath;
     private bool Dirty => _values.Any(pair => pair.Value != _original[pair.Key]);
 
@@ -153,19 +154,41 @@ public sealed partial class EndfieldDisplaySettings : IGamePreferences
         try
         {
             foreach (var (name, value) in _values)
-                if (value != _original[name]) WriteValue(key, name, value);
+            {
+                if (value == _original[name]) continue;
+                WriteValue(key, name, value);
+                _written.Add((name, value));
+            }
             key.Flush();
         }
-        catch { Restore(); throw; }
+        catch (Exception applyError)
+        {
+            try { Restore(); }
+            catch (Exception restoreError) { throw new AggregateException(applyError.Message, applyError, restoreError); }
+            throw;
+        }
     }
 
     public void Restore()
     {
-        if (!Dirty) return;
+        if (_written.Count == 0) return;
         using var key = Registry.CurrentUser.OpenSubKey(_registryPath, true) ?? throw new IOException(Get(SettingsText.GameConfigRestore));
-        foreach (var (name, value) in _values)
-            if (value != _original[name] && Equals(key.GetValue(RegistryName(name)), RawValue(name, value)))
-                WriteValue(key, name, _original[name]);
+        var errors = new List<Exception>();
+        for (int index = _written.Count - 1; index >= 0; index--)
+        {
+            var (name, value) = _written[index];
+            try
+            {
+                string registryName = RegistryName(name);
+                if (Equals(key.GetValue(registryName), RawValue(name, value)) &&
+                    key.GetValueKind(registryName) == RegistryValueKind.DWord)
+                    WriteValue(key, name, _original[name]);
+                _written.RemoveAt(index);
+            }
+            catch (Exception ex) { errors.Add(ex); }
+        }
+        key.Flush();
+        if (errors.Count != 0) throw new AggregateException(Get(SettingsText.GameConfigRestore), errors);
     }
 
     private static object RawValue(string name, long value) => Preferences.Any(p => p.Name == name && p.Volume) ? (object)value : (int)value;

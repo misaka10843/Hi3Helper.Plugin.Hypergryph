@@ -89,11 +89,23 @@ public sealed class PluginConfiguration
 
     public string Snapshot { get { lock (_gate) return _observed ?? ""; } }
 
+    internal void ValidateApply(PluginOptions options, string expectedSnapshot)
+    {
+        lock (_gate)
+        {
+            if (_running && options.ManualVerificationRequested)
+                throw new InvalidOperationException(Get(SettingsText.VerificationRunning));
+            string path = ConfigPath;
+            if ((File.Exists(path) ? File.ReadAllText(path) : null) != expectedSnapshot)
+                throw new IOException(Get(SettingsText.ConfigChanged));
+        }
+    }
+
     public void Apply(PluginOptions options, string expectedSnapshot)
     {
         lock (_gate)
         {
-            if (_running && options.ManualVerificationRequested) throw new InvalidOperationException(Get(SettingsText.VerificationRunning));
+            ValidateApply(options, expectedSnapshot);
             bool request = options.ManualVerificationRequested;
             _observed = expectedSnapshot;
             options.ManualVerificationRequested = false;
