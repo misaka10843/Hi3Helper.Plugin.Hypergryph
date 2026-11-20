@@ -113,7 +113,6 @@ namespace SharpHDiffPatch.Core.Patch
 
                 return returnStream;
             }
-            catch { throw; }
             finally
             {
                 ArrayPool<byte>.Shared.Return(buffer);
@@ -153,7 +152,7 @@ namespace SharpHDiffPatch.Core.Patch
                 newPosBack += copyLength;
                 oldPosBack = oldPos;
 
-                oldPosBack += true ? coverLength : 0;
+                oldPosBack += coverLength;
 
                 headers[i] = new CoverHeader
                 {
@@ -240,7 +239,6 @@ namespace SharpHDiffPatch.Core.Patch
 
                 SpawnCorePatchFinishedMsg();
             }
-            catch { throw; }
             finally
             {
                 _stopwatch?.Stop();
@@ -623,7 +621,6 @@ namespace SharpHDiffPatch.Core.Patch
                     }
                 }
             }
-            catch { throw; }
             finally
             {
                 ArrayPool<byte>.Shared.Return(buffer);

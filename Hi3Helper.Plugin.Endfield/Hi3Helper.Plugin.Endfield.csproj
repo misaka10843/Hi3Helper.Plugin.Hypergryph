@@ -30,7 +30,6 @@
     <ItemGroup>
         <ProjectReference Include="..\Hi3Helper.Plugin.Core\Hi3Helper.Plugin.Core.csproj"/>
         <ProjectReference Include="..\SevenZipExtractor\SevenZipExtractor\SevenZipExtractor.csproj"/>
-        <ProjectReference Include="..\SharpHDiffPatch.Core\SharpHDiffPatch.Core.csproj"/>
         <ProjectReference Include="..\Hi3Helper.Hypergryph.Core\Hi3Helper.Hypergryph.Core.csproj"/>
     </ItemGroup>
 
