@@ -27,7 +27,11 @@ public partial class HgGameManager : GameManagerBase
     private readonly string _subChannel;
     private readonly string _webApiUrl;
 
-    private HgGetLatestGameRsp? _latestGameInfo;
+    private volatile HgGetLatestGameRsp? _latestGameInfo;
+    private readonly object _refreshGate = new();
+    private long _normalRefresh;
+    private long _fullRefresh;
+    private string? _fullResourceBaseUrl;
 
     public HgGameManager(string gameExecutableNameByPreset, string apiUrl, string webApiUrl, string appCode,
         string launcherAppCode, string channel, string subChannel, string seq)
@@ -42,17 +46,39 @@ public partial class HgGameManager : GameManagerBase
         _seq = seq;
     }
 
-    internal string? GameResourceBaseUrl { get; set; }
+    internal string? GetFullResourceBaseUrl(string gamePath)
+    {
+        lock (_refreshGate)
+        {
+            RequireGamePath(gamePath);
+            return _fullResourceBaseUrl;
+        }
+    }
     private bool IsInitialized { get; set; }
 
-    internal bool IsDeltaUpdate => IsInstalled
-                                   && _latestGameInfo?.Patch?.Patches != null
-                                   && _latestGameInfo.Patch.Patches.Count > 0;
+    private bool IsDeltaUpdate => IsInstalled && _latestGameInfo?.Patch?.Patches is { Count: > 0 };
 
-    internal string? PatchManifestUrl => _latestGameInfo?.Patch?.V2PatchInfoUrl;
-    internal string? PatchCdKey => _latestGameInfo?.Patch?.CdKey;
+    internal (List<HgPack> Packs, bool IsDelta, string? PatchManifestUrl, string? PatchCdKey, string? ResourceUrl)
+        CaptureInstallPackage(string gamePath)
+    {
+        lock (_refreshGate)
+        {
+            RequireGamePath(gamePath);
+            bool delta = IsDeltaUpdate;
+            var patch = _latestGameInfo?.Patch;
+            var package = _latestGameInfo?.Pkg;
+            var packs = delta ? patch?.Patches : package?.Packs;
+            if (packs is not { Count: > 0 })
+                throw new InvalidOperationException("No download packs found in API response.");
+            return (packs, delta, patch?.V2PatchInfoUrl, patch?.CdKey, package?.FilePath);
+        }
+    }
 
-    internal List<HgPack>? GamePacks => GetGamePacks(GameInstallerKind.Update);
+    private void RequireGamePath(string gamePath)
+    {
+        if (!string.Equals(gamePath, CurrentGameInstallPath, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The game path changed while obtaining Hypergryph package information.");
+    }
 
     private string CurrentGameExecutableByPreset { get; }
 
@@ -90,28 +116,12 @@ public partial class HgGameManager : GameManagerBase
 
     internal List<HgPack>? GetGamePacks(GameInstallerKind kind)
     {
-        if (kind == GameInstallerKind.Preload)
+        lock (_refreshGate)
         {
-            if (_latestGameInfo?.PrePatch?.Patches is { Count: > 0 } prePatches)
-            {
-                SharedStatic.InstanceLogger.LogInformation(
-                    $"[HgCore] Preload detected, exposing PrePatch packs. Target version: {_latestGameInfo.PrePatch.Version}");
-                return prePatches;
-            }
-
-            SharedStatic.InstanceLogger.LogInformation("[HgCore] No preload package detected.");
-            return null;
+            if (kind == GameInstallerKind.Preload) return _latestGameInfo?.PrePatch?.Patches;
+            if (IsDeltaUpdate) return _latestGameInfo?.Patch?.Patches;
+            return _latestGameInfo?.Pkg?.Packs;
         }
-
-        if (IsDeltaUpdate)
-        {
-            SharedStatic.InstanceLogger.LogInformation(
-                "[HgCore] Delta update detected, exposing Patch packs.");
-            return _latestGameInfo!.Patch!.Patches;
-        }
-
-        SharedStatic.InstanceLogger.LogInformation("[HgCore] Full package detected.");
-        return _latestGameInfo?.Pkg?.Packs;
     }
 
     protected override void SetGamePathInner(string gamePath)
@@ -120,60 +130,48 @@ public partial class HgGameManager : GameManagerBase
         Hi3Helper.Hypergryph.Shared.PluginPaths.Migrate(gamePath);
         SharedStatic.InstanceLogger.LogInformation("[PluginLog] Game path set: {GamePath}", gamePath);
         SharedStatic.InstanceLogger.LogInformation($"[HgCore] SetGamePathInner called! Input path: '{gamePath}'");
-        CurrentGameInstallPath = gamePath;
-
-        _latestGameInfo = null;
-
-        if (!string.IsNullOrEmpty(gamePath))
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    SharedStatic.InstanceLogger.LogInformation(
-                        "[HgCore] Path updated, triggering re-initialization...");
-                    await InitAsyncInner(true);
-                }
-                catch (Exception ex)
-                {
-                    SharedStatic.InstanceLogger.LogError($"[HgCore]Re-initialization failed: {ex}");
-                }
-            });
+        lock (_refreshGate)
+        {
+            CurrentGameInstallPath = gamePath;
+            ++_normalRefresh;
+            ++_fullRefresh;
+            _latestGameInfo = null;
+            _fullResourceBaseUrl = null;
+            CurrentGameVersion = GameVersion.Empty;
+            ApiGameVersion = GameVersion.Empty;
+            ApiPreloadGameVersion = GameVersion.Empty;
+            IsInitialized = false;
+            if (!string.IsNullOrEmpty(gamePath)) _ = InitAsyncInner(true);
+        }
     }
 
-    internal async Task<int> InitAsyncInner(bool forceInit = false, CancellationToken token = default, bool requestFullPackage = false)
+    internal async Task<int> InitAsyncInner(bool forceInit = false, CancellationToken token = default,
+        bool requestFullPackage = false, string? expectedGamePath = null)
     {
-        if (!forceInit && IsInitialized) return 0;
+        string? gamePath;
+        long refresh;
+        lock (_refreshGate)
+        {
+            if (expectedGamePath != null) RequireGamePath(expectedGamePath);
+            if (!forceInit && !requestFullPackage && IsInitialized) return 0;
+            gamePath = CurrentGameInstallPath;
+            refresh = requestFullPackage ? ++_fullRefresh : ++_normalRefresh;
+        }
 
-        var requestVersion = "";
-
-        SharedStatic.InstanceLogger.LogInformation(
-            $"[HgCore] InitAsyncInner started. Current path: '{CurrentGameInstallPath}'");
-
-        if (IsInstalled)
+        string requestVersion = "";
+        if (!requestFullPackage && !string.IsNullOrEmpty(gamePath))
+        {
             try
             {
-                var configPath = Path.Combine(CurrentGameInstallPath!, "config.ini");
+                string configPath = Path.Combine(gamePath, "config.ini");
                 if (File.Exists(configPath))
-                {
-                    SharedStatic.InstanceLogger.LogInformation($"[HgCore] Config file found: {configPath}");
-                    var iniContent = ConfigTool.ReadConfig(configPath);
-                    var ver = ConfigTool.ParseVersion(iniContent);
-                    if (!string.IsNullOrEmpty(ver))
-                    {
-                        requestVersion = ver!;
-                        CurrentGameVersion = new GameVersion(requestVersion);
-                        SharedStatic.InstanceLogger.LogInformation(
-                            $"[HgCore] Successfully read local version: {requestVersion}");
-                    }
-                }
+                    requestVersion = ConfigTool.ParseVersion(ConfigTool.ReadConfig(configPath)) ?? "";
             }
             catch (Exception ex)
             {
-                SharedStatic.InstanceLogger.LogError(
-                    $"[HgCore] Exception occurred while reading local configuration: {ex}");
+                SharedStatic.InstanceLogger.LogError(ex, "[HgCore] Failed to read the local version.");
             }
-        else
-            SharedStatic.InstanceLogger.LogWarning("[HgCore] No installation detected; version set to empty.");
+        }
 
         var requestBody = new HgBatchRequest
         {
@@ -203,31 +201,34 @@ public partial class HgGameManager : GameManagerBase
 
             var responseBody =
                 await response.Content.ReadFromJsonAsync(HgApiContext.Default.HgBatchResponse, token);
-            _latestGameInfo = responseBody?.ProxyRsps?.FirstOrDefault(x => x.Kind == "get_latest_game")
+            var latest = responseBody?.ProxyRsps?.FirstOrDefault(x => x.Kind == "get_latest_game")
                 ?.GetLatestGameRsp;
-
-            if (_latestGameInfo == null)
+            if (latest == null)
             {
                 SharedStatic.InstanceLogger.LogError("[HgCore] API data error: get_latest_game_rsp is null.");
                 return -1;
             }
 
-            SharedStatic.InstanceLogger.LogInformation(
-                $"[HgCore] API Response - Action: {_latestGameInfo.Action}, Version: {_latestGameInfo.Version}, PreloadVersion: {_latestGameInfo.PrePatch?.Version}");
+            lock (_refreshGate)
+            {
+                if (refresh != (requestFullPackage ? _fullRefresh : _normalRefresh) ||
+                    !string.Equals(gamePath, CurrentGameInstallPath, StringComparison.OrdinalIgnoreCase))
+                    return -1;
 
-            if (!string.IsNullOrEmpty(_latestGameInfo.Version))
-                ApiGameVersion = new GameVersion(_latestGameInfo.Version);
-
-            if (!string.IsNullOrEmpty(_latestGameInfo.PrePatch?.Version))
-                ApiPreloadGameVersion =
-                    new GameVersion(_latestGameInfo.PrePatch.Version);
-            else
-                ApiPreloadGameVersion = GameVersion.Empty;
-
-            if (requestFullPackage || _latestGameInfo.Pkg != null)
-                GameResourceBaseUrl = _latestGameInfo.Pkg?.FilePath;
-
-            IsInitialized = true;
+                if (requestFullPackage)
+                {
+                    _fullResourceBaseUrl = latest.Pkg?.FilePath;
+                }
+                else
+                {
+                    CurrentGameVersion = string.IsNullOrEmpty(requestVersion) ? GameVersion.Empty : new GameVersion(requestVersion);
+                    ApiGameVersion = string.IsNullOrEmpty(latest.Version) ? GameVersion.Empty : new GameVersion(latest.Version);
+                    ApiPreloadGameVersion = string.IsNullOrEmpty(latest.PrePatch?.Version)
+                        ? GameVersion.Empty : new GameVersion(latest.PrePatch.Version);
+                    _latestGameInfo = latest;
+                    IsInitialized = true;
+                }
+            }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception ex)

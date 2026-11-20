@@ -18,7 +18,6 @@ public partial class YostarGameManager : GameManagerBase
 
     private readonly YostarApiClient _apiClient;
     private readonly YostarLauncherOptions _options;
-    private YostarTargetPackage? _targetPackage;
 
     public YostarGameManager(YostarLauncherOptions options)
     {
@@ -28,7 +27,6 @@ public partial class YostarGameManager : GameManagerBase
 
     internal YostarLauncherOptions Options => _options;
     internal YostarApiClient ApiClient => _apiClient;
-    internal YostarTargetPackage? TargetPackage => _targetPackage;
 
     protected override HttpClient ApiResponseHttpClient { get; set; } = new();
 
@@ -53,12 +51,17 @@ public partial class YostarGameManager : GameManagerBase
 
     protected override bool HasPreload => false;
 
-    internal async Task<YostarTargetPackage> GetTargetPackageAsync(bool forceRefresh, CancellationToken token)
+    internal async Task<YostarTargetPackage> RefreshTargetPackageAsync(CancellationToken token)
     {
-        if (!forceRefresh && _targetPackage != null) return _targetPackage;
-        _targetPackage = await _apiClient.GetTargetPackageAsync(token).ConfigureAwait(false);
-        ApplyApiVersion(_targetPackage.Config.LatestVersion);
-        return _targetPackage;
+        var package = await _apiClient.GetTargetPackageAsync(token).ConfigureAwait(false);
+        ApplyApiVersion(package.Config.LatestVersion);
+        return package;
+    }
+
+    internal async Task RefreshVersionAsync(CancellationToken token)
+    {
+        var config = await _apiClient.GetGameConfigAsync(token).ConfigureAwait(false);
+        ApplyApiVersion(config.LatestVersion);
     }
 
     protected override async Task<int> InitAsync(CancellationToken token)
@@ -66,9 +69,10 @@ public partial class YostarGameManager : GameManagerBase
         try
         {
             ReadLocalVersion();
-            await GetTargetPackageAsync(true, token).ConfigureAwait(false);
+            await RefreshVersionAsync(token).ConfigureAwait(false);
             return 0;
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             SharedStatic.InstanceLogger.LogError(ex, "[Yostar] Failed to initialize game manager.");
@@ -87,7 +91,6 @@ public partial class YostarGameManager : GameManagerBase
         Hi3Helper.Hypergryph.Shared.PluginPaths.Migrate(gamePath);
         SharedStatic.InstanceLogger.LogInformation("[PluginLog] Game path set: {GamePath}", gamePath);
         CurrentGameInstallPath = gamePath;
-        _targetPackage = null;
         ReadLocalVersion();
     }
 

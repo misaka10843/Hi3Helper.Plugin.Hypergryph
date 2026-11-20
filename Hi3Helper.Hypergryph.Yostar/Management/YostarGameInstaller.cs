@@ -8,6 +8,7 @@ using System.Net.Http.Headers;
 using System.Runtime.InteropServices.Marshalling;
 using System.Threading;
 using System.Threading.Tasks;
+using Hi3Helper.Hypergryph.Shared;
 using Hi3Helper.Hypergryph.Yostar.Api;
 using Hi3Helper.Hypergryph.Yostar.Storage;
 using Hi3Helper.Hypergryph.Yostar.Utility;
@@ -31,7 +32,7 @@ public partial class YostarGameInstaller : GameInstallerBase
     {
         if (GameManager is not YostarGameManager manager)
             throw new InvalidOperationException("GameManager is not YostarGameManager.");
-        await manager.GetTargetPackageAsync(true, token).ConfigureAwait(false);
+        await manager.RefreshVersionAsync(token).ConfigureAwait(false);
         return 0;
     }
 
@@ -54,7 +55,7 @@ public partial class YostarGameInstaller : GameInstallerBase
         foreach (YostarManifestFile file in plan.DownloadFiles)
         {
             token.ThrowIfCancellationRequested();
-            string tempPath = GetTargetFilePath(plan.GamePath, file.Path) + ".tmp";
+            string tempPath = GetTemporaryFilePath(plan.GamePath, file.Path);
             if (File.Exists(tempPath)) downloaded += Math.Min(new FileInfo(tempPath).Length, file.SizeValue);
         }
 
@@ -118,7 +119,7 @@ public partial class YostarGameInstaller : GameInstallerBase
         long existingTempBytes = 0;
         foreach (YostarManifestFile file in plan.DownloadFiles)
         {
-            string tempPath = GetTargetFilePath(plan.GamePath, file.Path) + ".tmp";
+            string tempPath = GetTemporaryFilePath(plan.GamePath, file.Path);
             if (File.Exists(tempPath))
             {
                 long length = new FileInfo(tempPath).Length;
@@ -181,9 +182,8 @@ public partial class YostarGameInstaller : GameInstallerBase
         if (GameManager is not YostarGameManager manager)
             throw new InvalidOperationException("GameManager is not YostarGameManager.");
         string gamePath = EnsureAndGetGamePath();
-        YostarTargetPackage package = await manager.GetTargetPackageAsync(true, token).ConfigureAwait(false);
+        YostarTargetPackage package = await manager.RefreshTargetPackageAsync(token).ConfigureAwait(false);
         YostarLocalManifest? localManifest = YostarLocalStorage.ReadManifest(gamePath);
-        bool fullVerify = verify;
 
         var localFiles = localManifest?.Files.ToDictionary(NormalizeManifestPath,
             StringComparer.OrdinalIgnoreCase) ??
@@ -191,6 +191,18 @@ public partial class YostarGameInstaller : GameInstallerBase
         var remoteFiles = package.Manifest.Files.ToDictionary(NormalizeManifestPath,
             StringComparer.OrdinalIgnoreCase);
         var downloadFiles = new List<YostarManifestFile>();
+        var deleteFiles = localFiles.Keys.Where(path => !remoteFiles.ContainsKey(path)).ToList();
+        foreach (string obsoletePath in deleteFiles) GetTargetFilePath(gamePath, obsoletePath);
+
+        foreach (string path in remoteFiles.Keys)
+        {
+            if (IsMetadataPath(path))
+                throw new InvalidDataException($"Yostar package contains a launcher metadata path: {path}");
+            GetTargetFilePath(gamePath, path);
+            GetTemporaryFilePath(gamePath, path);
+            if (remoteFiles.ContainsKey(path + ".tmp") || localFiles.ContainsKey(path + ".tmp"))
+                throw new InvalidDataException($"Conflicting Yostar temporary file: {path}");
+        }
 
         foreach (YostarManifestFile remoteFile in package.Manifest.Files)
         {
@@ -204,7 +216,7 @@ public partial class YostarGameInstaller : GameInstallerBase
 
             bool hasLocalFile = localFiles.TryGetValue(NormalizeManifestPath(remoteFile),
                 out YostarManifestFile? localFile);
-            if (fullVerify || !hasLocalFile)
+            if (verify || !hasLocalFile)
             {
                 string hash = await YostarCrc64.ComputeFileAsync(targetPath, token).ConfigureAwait(false);
                 if (!string.Equals(hash, remoteFile.Hash, StringComparison.Ordinal)) downloadFiles.Add(remoteFile);
@@ -215,7 +227,6 @@ public partial class YostarGameInstaller : GameInstallerBase
                 downloadFiles.Add(remoteFile);
         }
 
-        var deleteFiles = localFiles.Keys.Where(path => !remoteFiles.ContainsKey(path)).ToList();
         return new YostarInstallPlan(manager, package, gamePath, downloadFiles, deleteFiles);
     }
 
@@ -223,7 +234,7 @@ public partial class YostarGameInstaller : GameInstallerBase
         CancellationToken token, Action<long> reportProgress)
     {
         string targetPath = GetTargetFilePath(plan.GamePath, file.Path);
-        string tempPath = targetPath + ".tmp";
+        string tempPath = GetTemporaryFilePath(plan.GamePath, file.Path);
         Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
         if (File.Exists(tempPath) && new FileInfo(tempPath).Length > file.SizeValue) ForceDeleteFile(tempPath);
 
@@ -251,8 +262,9 @@ public partial class YostarGameInstaller : GameInstallerBase
                         $"CRC64 mismatch for {file.Path}. Expected {file.Hash}, got {hash}.");
                 }
 
-                ForceDeleteFile(targetPath);
-                File.Move(tempPath, targetPath, true);
+                token.ThrowIfCancellationRequested();
+                GetTargetFilePath(plan.GamePath, file.Path);
+                InstallPath.ReplaceVerifiedFile(tempPath, targetPath);
                 return;
             }
             catch (OperationCanceledException)
@@ -296,14 +308,23 @@ public partial class YostarGameInstaller : GameInstallerBase
         using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
             token).ConfigureAwait(false);
 
-        if (existingLength > 0 && response.StatusCode != HttpStatusCode.PartialContent)
+        response.EnsureSuccessStatusCode();
+        long responseEnd = expectedSize;
+        if (response.StatusCode == HttpStatusCode.PartialContent)
         {
-            ForceDeleteFile(tempPath);
+            var range = response.Content.Headers.ContentRange;
+            if (range is null || range.Unit != "bytes" || range.From != existingLength ||
+                range.Length != expectedSize || range.To is not long end || end < existingLength || end >= expectedSize)
+                throw new InvalidDataException("Invalid Yostar CDN Content-Range.");
+            responseEnd = end + 1;
+        }
+        else if (response.StatusCode == HttpStatusCode.OK)
+        {
             reportProgress(-existingLength);
             existingLength = 0;
         }
-
-        response.EnsureSuccessStatusCode();
+        else
+            throw new InvalidDataException($"Unexpected Yostar CDN response: {response.StatusCode}.");
         await using Stream input = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
         await using var output = new FileStream(tempPath,
             existingLength > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024,
@@ -312,6 +333,13 @@ public partial class YostarGameInstaller : GameInstallerBase
         int read;
         while ((read = await input.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
         {
+            if (read > responseEnd - output.Position)
+            {
+                long added = output.Position - existingLength;
+                output.SetLength(existingLength);
+                reportProgress(-added);
+                throw new InvalidDataException("Yostar CDN response exceeded the expected range.");
+            }
             await output.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
             reportProgress(read);
         }
@@ -335,15 +363,15 @@ public partial class YostarGameInstaller : GameInstallerBase
         return new Uri(domainUri, string.Join('/', segments));
     }
 
-    private static string GetTargetFilePath(string gamePath, string manifestPath)
-    {
-        string relativePath = NormalizeManifestPath(manifestPath).Replace('/', Path.DirectorySeparatorChar);
-        string root = Path.GetFullPath(gamePath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        string result = Path.GetFullPath(Path.Combine(root, relativePath));
-        if (!result.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException($"Manifest path escapes the game directory: {manifestPath}");
-        return result;
-    }
+    private static string GetTargetFilePath(string gamePath, string manifestPath) =>
+        InstallPath.Resolve(gamePath, NormalizeManifestPath(manifestPath));
+
+    private static string GetTemporaryFilePath(string gamePath, string manifestPath) =>
+        InstallPath.Resolve(gamePath, NormalizeManifestPath(manifestPath) + ".tmp");
+
+    private static bool IsMetadataPath(string path) =>
+        path.Equals(YostarLocalStorage.ConfigFileName, StringComparison.OrdinalIgnoreCase) ||
+        path.Equals(YostarLocalStorage.ManifestFileName, StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeManifestPath(YostarManifestFile file) => NormalizeManifestPath(file.Path);
 

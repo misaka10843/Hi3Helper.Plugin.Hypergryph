@@ -126,14 +126,14 @@ public partial class HgGameInstaller : GameInstallerBase
                 await StartInstallCoreAsync(kind, progressDelegate, progressStateDelegate, token).ConfigureAwait(false);
                 return;
             }
-            if (await manager.InitAsyncInner(true, token, requestFullPackage: true).ConfigureAwait(false) != 0)
-                throw new InvalidOperationException("Cannot obtain game resource information for verification.");
             GameManager.GetGamePath(out string? installPath);
             if (string.IsNullOrWhiteSpace(installPath) || !Directory.Exists(installPath))
                 throw new DirectoryNotFoundException("The game installation directory is missing.");
+            if (await manager.InitAsyncInner(true, token, requestFullPackage: true, expectedGamePath: installPath).ConfigureAwait(false) != 0)
+                throw new InvalidOperationException("Cannot obtain game resource information for verification.");
             SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Starting requested manual verification.");
             progressStateDelegate?.Invoke(InstallProgressState.Preparing);
-            var repairer = new HgGameRepairer(_downloadHttpClient, manager, installPath);
+            var repairer = new HgGameRepairer(_downloadHttpClient, manager.GetFullResourceBaseUrl(installPath), installPath);
             await repairer.StartRepairAsync(progressDelegate, progressStateDelegate, token).ConfigureAwait(false);
             progressStateDelegate?.Invoke(InstallProgressState.Completed);
         }

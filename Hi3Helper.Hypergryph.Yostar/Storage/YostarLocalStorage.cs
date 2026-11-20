@@ -26,17 +26,18 @@ internal sealed record YostarLocalManifest(
 
 internal static class YostarLocalStorage
 {
+    private static readonly object MetadataGate = new();
+    private const string JournalName = "yostar-metadata-pending";
     public const string ConfigFileName = "game-launcher-config.json";
     public const string ManifestFileName = "manifest.json";
 
     public static YostarLocalGameConfig? ReadGameConfig(string gamePath)
     {
-        string path = Path.Combine(gamePath, ConfigFileName);
-        if (!File.Exists(path)) return null;
-
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(path));
+            byte[]? bytes = ReadMetadata(gamePath, ConfigFileName);
+            if (bytes == null) return null;
+            using JsonDocument document = JsonDocument.Parse(bytes);
             JsonElement root = document.RootElement;
             if (!ValidateObjectHash(root, "vc")) return null;
 
@@ -66,12 +67,11 @@ internal static class YostarLocalStorage
 
     public static YostarLocalManifest? ReadManifest(string gamePath)
     {
-        string path = Path.Combine(gamePath, ManifestFileName);
-        if (!File.Exists(path)) return null;
-
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(path));
+            byte[]? bytes = ReadMetadata(gamePath, ManifestFileName);
+            if (bytes == null) return null;
+            using JsonDocument document = JsonDocument.Parse(bytes);
             JsonElement root = document.RootElement;
             string name = GetString(root, "name");
             string version = GetString(root, "version");
@@ -113,16 +113,58 @@ internal static class YostarLocalStorage
         string executableName = string.IsNullOrWhiteSpace(config.StartExecutableName)
             ? options.DefaultExecutableName
             : config.StartExecutableName.Trim();
-        string manifestTempPath = Path.Combine(gamePath, ManifestFileName + ".tmp");
-        string configTempPath = Path.Combine(gamePath, ConfigFileName + ".tmp");
+        string journal = GetJournalPath(gamePath);
+        string staging = journal + "-" + Guid.NewGuid().ToString("N");
+        Directory.CreateDirectory(staging);
+        try
+        {
+            await WriteManifestAsync(Path.Combine(staging, ManifestFileName), options.GameTag, version, basis, files, token)
+                .ConfigureAwait(false);
+            await WriteConfigAsync(Path.Combine(staging, ConfigFileName), options.GameTag, version, executableName,
+                config.StartParameters ?? [], config.UninstallScript ?? string.Empty, token).ConfigureAwait(false);
 
-        await WriteManifestAsync(manifestTempPath, options.GameTag, version, basis, files, token)
-            .ConfigureAwait(false);
-        await WriteConfigAsync(configTempPath, options.GameTag, version, executableName,
-            config.StartParameters ?? [], config.UninstallScript ?? string.Empty, token).ConfigureAwait(false);
+            lock (MetadataGate)
+            {
+                token.ThrowIfCancellationRequested();
+                RecoverMetadata(gamePath, journal);
+                Directory.Move(staging, journal);
+                RecoverMetadata(gamePath, journal);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(staging)) Directory.Delete(staging, true);
+        }
+    }
 
-        File.Move(manifestTempPath, Path.Combine(gamePath, ManifestFileName), true);
-        File.Move(configTempPath, Path.Combine(gamePath, ConfigFileName), true);
+    private static byte[]? ReadMetadata(string gamePath, string name)
+    {
+        lock (MetadataGate)
+        {
+            RecoverMetadata(gamePath, GetJournalPath(gamePath));
+            string path = Shared.InstallPath.Resolve(gamePath, name);
+            return File.Exists(path) ? File.ReadAllBytes(path) : null;
+        }
+    }
+
+    private static string GetJournalPath(string gamePath)
+    {
+        string pluginRoot = Path.Combine(gamePath, "_Hi3_Hg");
+        Shared.InstallPath.RejectLink(pluginRoot);
+        return Shared.InstallPath.Resolve(pluginRoot, JournalName);
+    }
+
+    private static void RecoverMetadata(string gamePath, string journal)
+    {
+        if (!Directory.Exists(journal)) return;
+        foreach (string name in new[] { ManifestFileName, ConfigFileName })
+        {
+            string source = Shared.InstallPath.Resolve(journal, name);
+            string target = Shared.InstallPath.Resolve(gamePath, name);
+            if (File.Exists(source)) File.Move(source, target, true);
+            else if (!File.Exists(target)) throw new IOException($"Missing Yostar metadata: {name}");
+        }
+        Directory.Delete(journal);
     }
 
     public static string NormalizeExecutableName(string? value, string fallback)

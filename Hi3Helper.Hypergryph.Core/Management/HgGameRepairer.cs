@@ -23,12 +23,12 @@ public class HgGameRepairer
 {
     private readonly HttpClient _httpClient;
     private readonly string _installPath;
-    private readonly HgGameManager _manager;
+    private readonly string? _resourceBaseUrl;
 
-    public HgGameRepairer(HttpClient httpClient, HgGameManager manager, string installPath)
+    public HgGameRepairer(HttpClient httpClient, string? resourceBaseUrl, string installPath)
     {
         _httpClient = httpClient;
-        _manager = manager;
+        _resourceBaseUrl = resourceBaseUrl;
         _installPath = installPath;
     }
 
@@ -48,33 +48,8 @@ public class HgGameRepairer
         File.Delete(filePath);
     }
 
-    private string ResolvePath(string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath) || relativePath.Contains(':'))
-            throw new InvalidDataException($"Invalid repair manifest path: {relativePath}");
-        string[] segments = relativePath.Replace('\\', '/').Split('/');
-        if (segments.Any(segment => string.IsNullOrWhiteSpace(segment) || segment is "." or ".." ||
-                segment != segment.TrimEnd(' ', '.') || segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) ||
-            segments[0].Equals("_Hi3_Hg", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException($"Invalid repair manifest path: {relativePath}");
-        string root = Path.GetFullPath(_installPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        string result = Path.GetFullPath(Path.Combine(root, Path.Combine(segments)));
-        if (!result.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException($"Repair path escapes the game directory: {relativePath}");
-        string current = root;
-        foreach (string segment in segments)
-        {
-            current = Path.Combine(current, segment);
-            try
-            {
-                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
-                    throw new InvalidDataException($"Repair path contains a link: {relativePath}");
-            }
-            catch (FileNotFoundException) { }
-            catch (DirectoryNotFoundException) { }
-        }
-        return result;
-    }
+    private string ResolvePath(string relativePath) =>
+        Hi3Helper.Hypergryph.Shared.InstallPath.Resolve(_installPath, relativePath);
 
     private async Task CommitVerifiedDownloadAsync(HgManifestNode node, CancellationToken token)
     {
@@ -86,14 +61,13 @@ public class HgGameRepairer
             throw new InvalidDataException($"[HgRepairer] Downloaded file failed verification: {node.Path}");
         }
         token.ThrowIfCancellationRequested();
-        if (File.Exists(targetPath)) File.SetAttributes(targetPath, FileAttributes.Normal);
-        File.Move(tempPath, targetPath, true);
+        Hi3Helper.Hypergryph.Shared.InstallPath.ReplaceVerifiedFile(tempPath, targetPath);
     }
 
     public async Task StartRepairAsync(InstallProgressDelegate? progressDelegate,
         InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
     {
-        var baseUrl = _manager.GameResourceBaseUrl;
+        var baseUrl = _resourceBaseUrl;
         if (string.IsNullOrEmpty(baseUrl))
         {
             throw new InvalidOperationException("The API did not provide a game resource URL for verification.");
@@ -127,6 +101,7 @@ public class HgGameRepairer
 
         var localManifestPath = ResolvePath("game_files");
         byte[]? encryptedManifest = null;
+        bool downloadedManifest = false;
 
         if (File.Exists(localManifestPath))
         {
@@ -152,7 +127,7 @@ public class HgGameRepairer
             try
             {
                 encryptedManifest = await _httpClient.GetByteArrayAsync(manifestUrl, token);
-                await File.WriteAllBytesAsync(localManifestPath, encryptedManifest, token);
+                downloadedManifest = true;
             }
             catch (Exception ex)
             {
@@ -185,6 +160,7 @@ public class HgGameRepairer
                             throw new InvalidDataException($"Invalid verification manifest entry: {node.Path}");
                         if (!manifestPaths.Add(ResolvePath(node.Path)))
                             throw new InvalidDataException($"Duplicate verification manifest path: {node.Path}");
+                        ResolvePath(node.Path + ".tmp");
                         manifestNodes.Add(node);
                     }
                     else throw new InvalidDataException("Verification manifest entry has no path.");
@@ -197,6 +173,20 @@ public class HgGameRepairer
         }
 
         if (manifestNodes.Count == 0) throw new InvalidDataException("The verification manifest contains no game files.");
+        if (manifestNodes.Any(node => manifestPaths.Contains(ResolvePath(node.Path! + ".tmp"))))
+            throw new InvalidDataException("Conflicting repair temporary file.");
+
+        if (downloadedManifest)
+        {
+            string temporary = ResolvePath($"game_files.{Guid.NewGuid():N}.tmp");
+            try
+            {
+                await File.WriteAllBytesAsync(temporary, encryptedManifest, token).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                File.Move(temporary, ResolvePath("game_files"), true);
+            }
+            finally { File.Delete(temporary); }
+        }
 
         var totalVerifyBytes = manifestNodes.Sum(n => n.Size);
         SharedStatic.InstanceLogger.LogInformation(

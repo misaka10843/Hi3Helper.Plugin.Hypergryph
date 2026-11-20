@@ -8,7 +8,11 @@ public static class PluginPaths
     private static readonly object MigrationGate = new();
     private static readonly HashSet<string> Migrated = new(StringComparer.OrdinalIgnoreCase);
     public static string Root(string gamePath) => Path.Combine(Path.GetFullPath(gamePath), "_Hi3_Hg");
-    public static string In(string gamePath, string name) => Path.Combine(Root(gamePath), name);
+    public static string In(string gamePath, string name)
+    {
+        InstallPath.RejectLink(Path.GetFullPath(gamePath));
+        return InstallPath.Resolve(Root(gamePath), name);
+    }
 
     public static void Migrate(string gamePath)
     {
@@ -31,7 +35,7 @@ public static class PluginPaths
             foreach (var (oldName, newName) in entries)
             {
                 string source = Path.Combine(gamePath, oldName);
-                string destination = In(gamePath, newName);
+                string destination = Path.Combine(Root(gamePath), newName);
                 if (!Directory.Exists(source)) continue;
                 if (Directory.Exists(destination) || File.Exists(destination) ||
                     (File.GetAttributes(source) & FileAttributes.ReparsePoint) != 0)
