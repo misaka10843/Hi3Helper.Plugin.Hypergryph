@@ -23,7 +23,6 @@ internal partial class SelfUpdate : PluginSelfUpdateBase
     {
         UpdateHttpClient = new PluginHttpClientBuilder()
             .AllowRedirections()
-            .AllowUntrustedCert()
             .AllowCookies()
             .Create();
     }
