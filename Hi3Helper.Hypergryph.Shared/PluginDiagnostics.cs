@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using Hi3Helper.Plugin.Core;
+using Hi3Helper.Plugin.Core.Management;
 
 namespace Hi3Helper.Hypergryph.Shared;
 
@@ -17,8 +18,8 @@ public static unsafe class PluginDiagnostics
     private static readonly Encoding LogEncoding = new UTF8Encoding(false);
     private static readonly string SessionFileName = GetSessionFileName();
     private static bool _initialized;
-    private static string? _gamePath;
-    private static bool _reportedFailure;
+    private static readonly AsyncLocal<string?> GamePath = new();
+    private static readonly HashSet<string> ReportedFailures = new(StringComparer.OrdinalIgnoreCase);
     private static nint _host;
 
     public static void Initialize()
@@ -37,15 +38,30 @@ public static unsafe class PluginDiagnostics
         }
     }
 
-    public static void SetGamePath(string? path)
+    internal static GameLogScope BeginGameOperation(IGameManager? manager)
+    {
+        string? path = null;
+        manager?.GetGamePath(out path);
+        return BeginGameOperation(path);
+    }
+
+    internal static GameLogScope BeginGameOperation(string? path)
     {
         Initialize();
-        lock (Gate)
+        return new GameLogScope(string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path));
+    }
+
+    internal readonly struct GameLogScope : IDisposable
+    {
+        private readonly string? _previous;
+
+        internal GameLogScope(string? path)
         {
-            string? fullPath = string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path);
-            if (!string.Equals(_gamePath, fullPath, StringComparison.OrdinalIgnoreCase)) _reportedFailure = false;
-            _gamePath = fullPath;
+            _previous = GamePath.Value;
+            GamePath.Value = path;
         }
+
+        public void Dispose() => GamePath.Value = _previous;
     }
 
     internal static nint Setter => (nint)(delegate* unmanaged[Cdecl]<nint, void>)&SetHost;
@@ -65,18 +81,17 @@ public static unsafe class PluginDiagnostics
             lock (Gate)
             {
                 if (level == null || length < 0 || message == null && length != 0) return;
-                if (*level is >= 2 and <= 5 && _gamePath != null && Directory.Exists(_gamePath))
+                if (*level is >= 2 and <= 5 && GamePath.Value is string gamePath && Directory.Exists(gamePath))
                 {
                     try
                     {
-                        WriteSessionLog(_gamePath, *level, new ReadOnlySpan<char>(message, length));
+                        WriteSessionLog(gamePath, *level, new ReadOnlySpan<char>(message, length));
                     }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
                     {
-                        if (!_reportedFailure)
+                        if (ReportedFailures.Add(gamePath))
                         {
-                            _reportedFailure = true;
-                            string warning = $"[PluginLog] Cannot write log under {_gamePath}: {ex.Message}";
+                            string warning = $"[PluginLog] Cannot write log under {gamePath}: {ex.Message}";
                             int warningLevel = 3;
                             fixed (char* text = warning) Forward(&warningLevel, eventId, text, warning.Length);
                         }

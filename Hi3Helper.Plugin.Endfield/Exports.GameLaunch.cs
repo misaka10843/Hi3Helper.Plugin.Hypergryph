@@ -25,6 +25,7 @@ public partial class Exports
 
         async Task<bool> Impl()
         {
+            using var log = Hi3Helper.Hypergryph.Shared.PluginDiagnostics.BeginGameOperation(context.GameManager);
             if (!TryGetGameExecutablePath(context, out var gameExecutablePath)) return false;
 
             if (context is not

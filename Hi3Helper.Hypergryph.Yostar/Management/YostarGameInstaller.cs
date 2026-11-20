@@ -32,6 +32,7 @@ public partial class YostarGameInstaller : GameInstallerBase
     {
         if (GameManager is not YostarGameManager manager)
             throw new InvalidOperationException("GameManager is not YostarGameManager.");
+        using var log = PluginDiagnostics.BeginGameOperation(manager);
         await manager.RefreshVersionAsync(token).ConfigureAwait(false);
         return 0;
     }
@@ -83,7 +84,8 @@ public partial class YostarGameInstaller : GameInstallerBase
     private async Task RunInstallAsync(InstallProgressDelegate? progressDelegate,
         InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
     {
-        var configuration = Hi3Helper.Hypergryph.Shared.PluginConfiguration.For(GameManager);
+        using var log = PluginDiagnostics.BeginGameOperation(GameManager);
+        var configuration = PluginConfiguration.For(GameManager);
         bool verify = configuration.BeginVerification();
         try
         {
@@ -182,6 +184,7 @@ public partial class YostarGameInstaller : GameInstallerBase
         if (GameManager is not YostarGameManager manager)
             throw new InvalidOperationException("GameManager is not YostarGameManager.");
         string gamePath = EnsureAndGetGamePath();
+        using var log = PluginDiagnostics.BeginGameOperation(gamePath);
         YostarTargetPackage package = await manager.RefreshTargetPackageAsync(token).ConfigureAwait(false);
         YostarLocalManifest? localManifest = YostarLocalStorage.ReadManifest(gamePath);
 

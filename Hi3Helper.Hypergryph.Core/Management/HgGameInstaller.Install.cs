@@ -61,6 +61,7 @@ public partial class HgGameInstaller
             if (string.IsNullOrEmpty(installPath)) throw new InvalidOperationException("Install path is missing.");
             if (await manager.InitAsyncInner(true, token, expectedGamePath: installPath).ConfigureAwait(false) != 0)
                 throw new InvalidOperationException("Cannot refresh Hypergryph package information.");
+            using var log = PluginDiagnostics.BeginGameOperation(installPath);
             var package = manager.CaptureInstallPackage(installPath);
 
             var downloadDir = GetDownloadDirectory(installPath);

@@ -66,6 +66,7 @@ public partial class YostarGameManager : GameManagerBase
 
     protected override async Task<int> InitAsync(CancellationToken token)
     {
+        using var log = Hi3Helper.Hypergryph.Shared.PluginDiagnostics.BeginGameOperation(this);
         try
         {
             ReadLocalVersion();
@@ -87,7 +88,7 @@ public partial class YostarGameManager : GameManagerBase
 
     protected override void SetGamePathInner(string gamePath)
     {
-        Hi3Helper.Hypergryph.Shared.PluginDiagnostics.SetGamePath(gamePath);
+        using var log = Hi3Helper.Hypergryph.Shared.PluginDiagnostics.BeginGameOperation(gamePath);
         Hi3Helper.Hypergryph.Shared.PluginPaths.Migrate(gamePath);
         SharedStatic.InstanceLogger.LogInformation("[PluginLog] Game path set: {GamePath}", gamePath);
         CurrentGameInstallPath = gamePath;

@@ -47,6 +47,7 @@ public partial class HgGameInstaller : GameInstallerBase
     protected override async Task<long> GetGameSizeAsyncInner(GameInstallerKind gameInstallerKind,
         CancellationToken token)
     {
+        using var log = Hi3Helper.Hypergryph.Shared.PluginDiagnostics.BeginGameOperation(GameManager);
         await InitAsync(token).ConfigureAwait(false);
 
         if (GameManager is not HgGameManager manager) return 0L;
@@ -65,6 +66,7 @@ public partial class HgGameInstaller : GameInstallerBase
     protected override async Task<long> GetGameDownloadedSizeAsyncInner(GameInstallerKind gameInstallerKind,
         CancellationToken token)
     {
+        using var log = Hi3Helper.Hypergryph.Shared.PluginDiagnostics.BeginGameOperation(GameManager);
         await InitAsync(token).ConfigureAwait(false);
         if (GameManager is not HgGameManager manager) return 0L;
         if (gameInstallerKind != GameInstallerKind.Preload && manager.IsManualVerifyRequested) return 0L;
@@ -117,6 +119,7 @@ public partial class HgGameInstaller : GameInstallerBase
         if (GameManager is not HgGameManager manager)
             throw new InvalidOperationException("GameManager is not HgGameManager");
 
+        using var log = Hi3Helper.Hypergryph.Shared.PluginDiagnostics.BeginGameOperation(manager);
         var configuration = Hi3Helper.Hypergryph.Shared.PluginConfiguration.For(manager);
         bool verify = configuration.BeginVerification();
         try
@@ -156,18 +159,19 @@ public partial class HgGameInstaller : GameInstallerBase
     private async Task StartPreloadCoreAsync(InstallProgressDelegate? progressDelegate,
         InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
     {
-        await InitAsync(token).ConfigureAwait(false);
-
         if (GameManager is not HgGameManager manager)
             throw new InvalidOperationException("GameManager is not HgGameManager");
 
-        var packs = manager.GetGamePacks(GameInstallerKind.Preload);
-        if (packs == null || packs.Count == 0)
-            throw new InvalidOperationException("No preload packs found in API response.");
-
-        GameManager.GetGamePath(out var installPath);
+        manager.GetGamePath(out var installPath);
         if (string.IsNullOrEmpty(installPath))
             throw new InvalidOperationException("Install path is missing.");
+
+        using var log = Hi3Helper.Hypergryph.Shared.PluginDiagnostics.BeginGameOperation(installPath);
+        if (await manager.InitAsyncInner(true, token, expectedGamePath: installPath).ConfigureAwait(false) != 0)
+            throw new InvalidOperationException("Cannot refresh Hypergryph preload information.");
+        var packs = manager.GetGamePacks(GameInstallerKind.Preload);
+        if (packs is not { Count: > 0 })
+            throw new InvalidOperationException("No preload packs found in API response.");
 
         var downloadDir = GetDownloadDirectory(installPath);
         Directory.CreateDirectory(downloadDir);
