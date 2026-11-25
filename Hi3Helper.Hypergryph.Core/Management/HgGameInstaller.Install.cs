@@ -53,7 +53,43 @@ public partial class HgGameInstaller
         public async Task RunAsync(GameInstallerKind kind, InstallProgressDelegate? progressDelegate,
             InstallProgressStateDelegate? progressStateDelegate, CancellationToken token)
         {
-            _ = kind;
+            using var log = PluginDiagnostics.BeginGameOperation(_owner.GameManager);
+            var timer = Stopwatch.StartNew();
+            var timings = new Dictionary<string, TimeSpan>();
+            string phase = "prepare";
+            TimeSpan phaseStart = TimeSpan.Zero;
+            string outcome = "failed";
+
+            void BeginPhase(string next)
+            {
+                TimeSpan elapsed = timer.Elapsed;
+                timings[phase] = timings.GetValueOrDefault(phase) + elapsed - phaseStart;
+                phaseStart = elapsed;
+                phase = next;
+            }
+
+            try
+            {
+                await RunCoreAsync(progressDelegate, progressStateDelegate, token, BeginPhase).ConfigureAwait(false);
+                outcome = "completed";
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                outcome = "cancelled";
+                throw;
+            }
+            finally
+            {
+                BeginPhase("end");
+                var summary = string.Join(", ", timings.Select(item => $"{item.Key}={item.Value.TotalSeconds:F2}s"));
+                SharedStatic.InstanceLogger.LogInformation(
+                    "[HgInstaller] Update {Outcome} in {Seconds:F2}s ({Phases})", outcome, timer.Elapsed.TotalSeconds, summary);
+            }
+        }
+
+        private async Task RunCoreAsync(InstallProgressDelegate? progressDelegate,
+            InstallProgressStateDelegate? progressStateDelegate, CancellationToken token, Action<string> beginPhase)
+        {
             if (_owner.GameManager is not HgGameManager manager)
                 throw new InvalidOperationException("GameManager is not HgGameManager.");
 
@@ -198,6 +234,7 @@ public partial class HgGameInstaller
             progress.TotalStateToComplete = package.Packs.Count;
             progress.StateCount = package.Packs.Count - downloadTasks.Count;
 
+            beginPhase("download");
             //断点续传下载
             if (downloadTasks.Count > 0)
             {
@@ -274,6 +311,7 @@ public partial class HgGameInstaller
                     Directory.CreateDirectory(tempExtractDir);
                     Directory.CreateDirectory(stageDir);
 
+                    beginPhase("extract");
                     await ExtractPackagesAsync(
                         downloadDir,
                         tempExtractDir,
@@ -355,6 +393,7 @@ public partial class HgGameInstaller
                 ResetSingleStageProgress();
                 Report(InstallProgressState.Updating);
 
+                beginPhase("patch");
                 await ApplyDeltaPatchAsync(tempExtractDir, installPath, stageDir, package.PatchManifestUrl, token,
                     (patchedBytes, totalBytes) =>
                     {
@@ -409,6 +448,7 @@ public partial class HgGameInstaller
 
                 Report(InstallProgressState.Updating);
 
+                beginPhase("commit");
                 CommitStageDirectory(
                     stagedPlan,
                     installPath,
@@ -465,6 +505,7 @@ public partial class HgGameInstaller
                 Directory.CreateDirectory(fullStage);
                 try
                 {
+                    beginPhase("extract");
                     await ExtractPackagesAsync(downloadDir, fullStage, null, token, (extractedBytes, totalBytes) =>
                     {
                         progress.DownloadedBytes = extractedBytes;
@@ -481,6 +522,7 @@ public partial class HgGameInstaller
                         InstallPath.Resolve(installPath, path);
                         return (Source: InstallPath.Resolve(fullStage, path), RelativePath: path);
                     }).ToArray();
+                    beginPhase("commit");
                     CommitStageDirectory(fullPlan, installPath, token);
                 }
                 finally { Directory.Delete(fullStage, true); }
@@ -508,6 +550,7 @@ public partial class HgGameInstaller
                     await manager.InitAsyncInner(true, token, requestFullPackage: true, expectedGamePath: installPath).ConfigureAwait(false) == 0)
                     resourceUrl = manager.GetFullResourceBaseUrl(installPath);
                 var repairer = new HgGameRepairer(_owner._downloadHttpClient, resourceUrl, installPath);
+                beginPhase("verify/repair");
                 await repairer.StartRepairAsync(progressDelegate, progressStateDelegate, token);
                 var newConfigPath = Path.Combine(installPath, "config.ini.new");
                 var targetConfigPath = InstallPath.Resolve(installPath, "config.ini");
@@ -546,6 +589,7 @@ public partial class HgGameInstaller
                     manifest = await JsonSerializer.DeserializeAsync(fs, HgApiContext.Default.HgPatchManifest,
                         token);
                 }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
                     SharedStatic.InstanceLogger.LogWarning(
@@ -616,18 +660,54 @@ public partial class HgGameInstaller
             var copyCount = 0;
             var patchCount = 0;
             var verifyOnlyCount = 0;
-            var skippedNodes = new List<string>();
+            var skippedNodes = new ConcurrentQueue<string>();
 
             SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Starting VFS delta patch pipeline...");
 
-            foreach (var fileNode in manifest.Files)
+            var outputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var node in manifest.Files)
             {
                 token.ThrowIfCancellationRequested();
+                if (string.IsNullOrEmpty(node.Name)) continue;
+                ReserveOutput(node.Name);
+                if (string.IsNullOrEmpty(node.LocalPath) && node.Patches is { Count: > 0 })
+                    ReserveOutput(node.Name + ".tmp");
+            }
+
+            void ReserveOutput(string name)
+            {
+                if (!outputs.Add(InstallPath.Resolve(stageRoot, vfsRelativePath + "/" + name)))
+                    throw new InvalidDataException($"Conflicting patch output: {name}");
+            }
+
+            foreach (string output in outputs)
+                for (string? parent = Path.GetDirectoryName(output); parent != null; parent = Path.GetDirectoryName(parent))
+                    if (outputs.Contains(parent))
+                        throw new InvalidDataException($"Patch output is also a parent directory: {parent}");
+
+            var progressGate = new object();
+            void ReportCompleted(long size)
+            {
+                lock (progressGate)
+                {
+                    currentPatchedSize += size;
+                    progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
+                }
+            }
+
+            int workers = Environment.ProcessorCount >= 4 ? 2 : 1;
+            await Parallel.ForEachAsync(manifest.Files, new ParallelOptions
+            {
+                MaxDegreeOfParallelism = workers,
+                CancellationToken = token
+            }, async (fileNode, patchToken) =>
+            {
+                patchToken.ThrowIfCancellationRequested();
 
                 if (string.IsNullOrEmpty(fileNode.Name))
                 {
-                    skippedNodes.Add("<empty name>");
-                    continue;
+                    skippedNodes.Enqueue("<empty name>");
+                    return;
                 }
 
                 var targetFilePath = InstallPath.Resolve(stageRoot, vfsRelativePath + "/" + fileNode.Name);
@@ -648,9 +728,9 @@ public partial class HgGameInstaller
 
                     if (!File.Exists(sourceExtractedFile))
                     {
-                        skippedNodes.Add(
+                        skippedNodes.Enqueue(
                             $"{fileNode.Name} | local_path missing: {fileNode.LocalPath}");
-                        continue;
+                        return;
                     }
 
                     ForceDeleteFile(targetFilePath);
@@ -661,24 +741,23 @@ public partial class HgGameInstaller
                         var isTargetMatch = await HgFileDownloader.CheckMd5Async(
                             targetFilePath,
                             fileNode.Md5,
-                            token).ConfigureAwait(false);
+                            patchToken).ConfigureAwait(false);
 
                         if (!isTargetMatch)
                         {
-                            skippedNodes.Add(
+                            skippedNodes.Enqueue(
                                 $"{fileNode.Name} | copied file md5 mismatch");
 
-                            continue;
+                            return;
                         }
                     }
 
-                    Interlocked.Add(ref currentPatchedSize, fileNode.Size);
-                    progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
+                    ReportCompleted(fileNode.Size);
 
                     SharedStatic.InstanceLogger.LogDebug(
                         $"[HgInstaller] [Copy] {fileNode.Name}");
 
-                    copyCount++;
+                    Interlocked.Increment(ref copyCount);
                 }
                 else if (fileNode.Patches != null && fileNode.Patches.Count > 0)
                 {
@@ -687,9 +766,9 @@ public partial class HgGameInstaller
                     if (string.IsNullOrEmpty(patchInfo.BaseFile) ||
                         string.IsNullOrEmpty(patchInfo.PatchPath))
                     {
-                        skippedNodes.Add(
+                        skippedNodes.Enqueue(
                             $"{fileNode.Name} | invalid patch node");
-                        continue;
+                        return;
                     }
 
                     var baseFilePath = InstallPath.Resolve(targetGameRoot, vfsRelativePath + "/" + patchInfo.BaseFile);
@@ -704,16 +783,16 @@ public partial class HgGameInstaller
 
                     if (!File.Exists(baseFilePath))
                     {
-                        skippedNodes.Add(
+                        skippedNodes.Enqueue(
                             $"{fileNode.Name} | base file missing: {patchInfo.BaseFile}");
-                        continue;
+                        return;
                     }
 
                     if (!File.Exists(diffFilePath))
                     {
-                        skippedNodes.Add(
+                        skippedNodes.Enqueue(
                             $"{fileNode.Name} | diff file missing: {patchInfo.PatchPath}");
-                        continue;
+                        return;
                     }
 
                     if (!string.IsNullOrEmpty(patchInfo.BaseMd5))
@@ -721,7 +800,7 @@ public partial class HgGameInstaller
                         var isBaseMatch = await HgFileDownloader.CheckMd5Async(
                             baseFilePath,
                             patchInfo.BaseMd5,
-                            token).ConfigureAwait(false);
+                            patchToken).ConfigureAwait(false);
 
                         if (!isBaseMatch)
                         {
@@ -746,24 +825,23 @@ public partial class HgGameInstaller
                             var isTargetMatch = await HgFileDownloader.CheckMd5Async(
                                 targetFilePath,
                                 fileNode.Md5,
-                                token).ConfigureAwait(false);
+                                patchToken).ConfigureAwait(false);
 
                             if (!isTargetMatch)
                             {
-                                skippedNodes.Add(
+                                skippedNodes.Enqueue(
                                     $"{fileNode.Name} | empty patch target md5 mismatch");
 
-                                continue;
+                                return;
                             }
                         }
 
-                        Interlocked.Add(ref currentPatchedSize, fileNode.Size);
-                        progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
+                        ReportCompleted(fileNode.Size);
 
                         SharedStatic.InstanceLogger.LogDebug(
                             $"[HgInstaller] [Skip Empty Patch] {fileNode.Name}");
 
-                        patchCount++;
+                        Interlocked.Increment(ref patchCount);
                     }
                     else
                     {
@@ -790,17 +868,14 @@ public partial class HgGameInstaller
                                 baseFilePath,
                                 diffFilePath,
                                 tempOutPath,
-                                token).ConfigureAwait(false);
-
-                            Interlocked.Add(ref currentPatchedSize, fileNode.Size);
-                            progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
+                                patchToken).ConfigureAwait(false);
 
                             if (!string.IsNullOrEmpty(fileNode.Md5))
                             {
                                 var isTargetMatch = await HgFileDownloader.CheckMd5Async(
                                     tempOutPath,
                                     fileNode.Md5,
-                                    token).ConfigureAwait(false);
+                                    patchToken).ConfigureAwait(false);
 
                                 if (!isTargetMatch)
                                 {
@@ -813,11 +888,12 @@ public partial class HgGameInstaller
 
                             ForceDeleteFile(targetFilePath);
                             File.Move(tempOutPath, targetFilePath, true);
+                            ReportCompleted(fileNode.Size);
 
                             SharedStatic.InstanceLogger.LogDebug(
                                 $"[HgInstaller] [Patch] {fileNode.Name}");
 
-                            patchCount++;
+                            Interlocked.Increment(ref patchCount);
                         }
                         catch (Exception ex)
                         {
@@ -836,9 +912,9 @@ public partial class HgGameInstaller
                     SharedStatic.InstanceLogger.LogDebug(
                         $"[HgInstaller] [VerifyOnly] {fileNode.Name}");
 
-                    verifyOnlyCount++;
+                    Interlocked.Increment(ref verifyOnlyCount);
                 }
-            }
+            }).ConfigureAwait(false);
 
             if (skippedNodes.Count > 0)
             {
@@ -856,7 +932,7 @@ public partial class HgGameInstaller
 
             SharedStatic.InstanceLogger.LogInformation(
                 $"[HgInstaller] VFS delta patch pipeline executed successfully. " +
-                $"Copy={copyCount}, Patch={patchCount}, VerifyOnly={verifyOnlyCount}, Total={manifest.Files.Count}");
+                $"Workers={workers}, Copy={copyCount}, Patch={patchCount}, VerifyOnly={verifyOnlyCount}, Total={manifest.Files.Count}");
         }
 
         private async Task DownloadFileAsync(string url, string tempPath, long expectedSize, CancellationToken token,
@@ -1102,7 +1178,17 @@ public partial class HgGameInstaller
             var stdoutTask = process.StandardOutput.ReadToEndAsync(token);
             var stderrTask = process.StandardError.ReadToEndAsync(token);
 
-            await process.WaitForExitAsync(token).ConfigureAwait(false);
+            try
+            {
+                await process.WaitForExitAsync(token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                try { process.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) when (process.HasExited) { }
+                await process.WaitForExitAsync().ConfigureAwait(false);
+                throw;
+            }
 
             var stdout = await stdoutTask.ConfigureAwait(false);
             var stderr = await stderrTask.ConfigureAwait(false);
