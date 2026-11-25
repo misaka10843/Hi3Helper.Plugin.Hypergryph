@@ -107,8 +107,8 @@ public partial class HgGameInstaller
 
             void Report(InstallProgressState state)
             {
-                progressDelegate?.Invoke(in progress);
                 progressStateDelegate?.Invoke(state);
+                progressDelegate?.Invoke(in progress);
             }
 
             void ResetSingleStageProgress()
@@ -303,7 +303,7 @@ public partial class HgGameInstaller
                 if (!skipExtractForDebug)
                 {
                     ResetSingleStageProgress();
-                    Report(InstallProgressState.Updating);
+                    Report(InstallProgressState.Install);
 
                     if (Directory.Exists(tempExtractDir)) Directory.Delete(tempExtractDir, true);
                     if (Directory.Exists(stageDir)) Directory.Delete(stageDir, true);
@@ -321,18 +321,18 @@ public partial class HgGameInstaller
                         {
                             progress.DownloadedBytes = extractedBytes;
                             progress.TotalBytesToDownload = totalBytes;
-                            Report(InstallProgressState.Updating);
+                            Report(InstallProgressState.Install);
                         });
 
                     CompleteSingleStageProgress();
-                    Report(InstallProgressState.Updating);
+                    Report(InstallProgressState.Install);
                 }
                 else
                 {
                     Directory.CreateDirectory(stageDir);
                 }
 
-                Report(InstallProgressState.Updating);
+                Report(InstallProgressState.Install);
                 SharedStatic.InstanceLogger.LogInformation(
                     "[HgInstaller] Copying static update files to staging directory...");
 
@@ -352,10 +352,9 @@ public partial class HgGameInstaller
                 progress.DownloadedCount = 0;
                 progress.TotalStateToComplete = staticFiles.Count;
                 progress.StateCount = 0;
-                progress.TotalBytesToDownload = staticFiles.Sum(x => new FileInfo(x).Length);
-                progress.DownloadedBytes = 0;
+                progress.TotalBytesToDownload = progress.DownloadedBytes + staticFiles.Sum(x => new FileInfo(x).Length);
 
-                Report(InstallProgressState.Updating);
+                Report(InstallProgressState.Install);
 
                 foreach (var newPath in staticFiles)
                 {
@@ -374,7 +373,7 @@ public partial class HgGameInstaller
                         progress.DownloadedBytes += fileSize;
                         progress.DownloadedCount++;
                         progress.StateCount++;
-                        Report(InstallProgressState.Updating);
+                        Report(InstallProgressState.Install);
                         continue;
                     }
 
@@ -387,7 +386,7 @@ public partial class HgGameInstaller
                     progress.DownloadedBytes += fileSize;
                     progress.DownloadedCount++;
                     progress.StateCount++;
-                    Report(InstallProgressState.Updating);
+                    Report(InstallProgressState.Install);
                 }
 
                 ResetSingleStageProgress();
@@ -446,7 +445,7 @@ public partial class HgGameInstaller
                 progress.TotalBytesToDownload = stagedFiles.Sum(x => new FileInfo(x).Length);
                 progress.DownloadedBytes = 0;
 
-                Report(InstallProgressState.Updating);
+                Report(InstallProgressState.Install);
 
                 beginPhase("commit");
                 CommitStageDirectory(
@@ -458,7 +457,7 @@ public partial class HgGameInstaller
                         progress.DownloadedBytes = committedBytes;
                         progress.DownloadedCount = committedCount;
                         progress.StateCount = committedCount;
-                        Report(InstallProgressState.Updating);
+                        Report(InstallProgressState.Install);
                     });
 
                 Report(InstallProgressState.Removing);
