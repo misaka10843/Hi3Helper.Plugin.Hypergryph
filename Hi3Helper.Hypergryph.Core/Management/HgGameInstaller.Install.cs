@@ -78,6 +78,11 @@ public partial class HgGameInstaller
                 outcome = "cancelled";
                 throw;
             }
+            catch (Exception ex) when (ex is not HgDiskSpace.SpaceException && HgDiskSpace.IsDiskFull(ex))
+            {
+                _owner.GameManager.GetGamePath(out var gamePath);
+                throw HgDiskSpace.WriteFailure(gamePath ?? string.Empty, ex);
+            }
             finally
             {
                 BeginPhase("end");
@@ -352,7 +357,9 @@ public partial class HgGameInstaller
                 progress.DownloadedCount = 0;
                 progress.TotalStateToComplete = staticFiles.Count;
                 progress.StateCount = 0;
-                progress.TotalBytesToDownload = progress.DownloadedBytes + staticFiles.Sum(x => new FileInfo(x).Length);
+                long staticBytes = staticFiles.Sum(x => new FileInfo(x).Length);
+                HgDiskSpace.EnsureAvailable(stageDir, staticBytes);
+                progress.TotalBytesToDownload = progress.DownloadedBytes + staticBytes;
 
                 Report(InstallProgressState.Install);
 
@@ -656,6 +663,7 @@ public partial class HgGameInstaller
                             (f.Patches != null && f.Patches.Count > 0))
                 .ToArray();
             var totalPatchSize = patchFiles.Sum(f => f.Size);
+            HgDiskSpace.EnsureAvailable(stageRoot, totalPatchSize);
             long currentPatchedSize = 0;
             int completedFiles = 0;
 
@@ -1293,6 +1301,7 @@ public partial class HgGameInstaller
                         return InstallPath.Resolve(destDir, path);
                     });
                     var totalSize = archiveFile.Entries.Sum(x => (long)x.Size);
+                    HgDiskSpace.EnsureAvailable(destDir, totalSize);
                     long currentRead = 0;
 
                     void ZipProgressAdapter(object? sender, ExtractProgressProp e)
@@ -1307,6 +1316,10 @@ public partial class HgGameInstaller
                     {
                         await archiveFile.ExtractAsync(entry => entryPaths[entry], true, 1 << 20, token);
                     }
+                    catch (Exception ex) when (HgDiskSpace.IsDiskFull(ex))
+                    {
+                        throw HgDiskSpace.WriteFailure(destDir, ex, totalSize);
+                    }
                     finally
                     {
                         archiveFile.ExtractProgress -= ZipProgressAdapter;
@@ -1314,11 +1327,9 @@ public partial class HgGameInstaller
 
                     SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Decompression complete!");
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not (OperationCanceledException or HgDiskSpace.SpaceException))
                 {
-                    var message = string.IsNullOrEmpty(password)
-                        ? "[HgInstaller] Decompression failed. The archive may be corrupted, or this update package may be encrypted but patch.cd_key was not returned by API."
-                        : "[HgInstaller] Decompression failed. The archive may be corrupted, patch.cd_key may be wrong, or the cached preload package may not match the official update package.";
+                    var message = $"[HgInstaller] Decompression failed in '{destDir}'. {ex.Message}";
 
                     SharedStatic.InstanceLogger.LogError($"{message}\n{ex}");
 
