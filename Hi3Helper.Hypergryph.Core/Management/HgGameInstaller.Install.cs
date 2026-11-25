@@ -690,12 +690,27 @@ public partial class HgGameInstaller
                         throw new InvalidDataException($"Patch output is also a parent directory: {parent}");
 
             var progressGate = new object();
-            void ReportCompleted(long size)
+            var activeOutputBytes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            progressCallback?.Invoke(0, totalPatchSize);
+
+            void ReportCompleted(long size, string? output = null)
             {
                 lock (progressGate)
                 {
+                    if (output != null) activeOutputBytes.Remove(output);
                     currentPatchedSize += size;
-                    progressCallback?.Invoke(currentPatchedSize, totalPatchSize);
+                    progressCallback?.Invoke(currentPatchedSize + activeOutputBytes.Values.Sum(), totalPatchSize);
+                }
+            }
+
+            void ReportOutput(string output, long bytes, long size)
+            {
+                lock (progressGate)
+                {
+                    long observed = Math.Clamp(bytes, 0L, Math.Max(0L, size - 1));
+                    if (observed <= activeOutputBytes.GetValueOrDefault(output)) return;
+                    activeOutputBytes[output] = observed;
+                    progressCallback?.Invoke(currentPatchedSize + activeOutputBytes.Values.Sum(), totalPatchSize);
                 }
             }
 
@@ -872,7 +887,8 @@ public partial class HgGameInstaller
                                 baseFilePath,
                                 diffFilePath,
                                 tempOutPath,
-                                patchToken).ConfigureAwait(false);
+                                patchToken,
+                                bytes => ReportOutput(tempOutPath, bytes, fileNode.Size)).ConfigureAwait(false);
 
                             if (!string.IsNullOrEmpty(fileNode.Md5))
                             {
@@ -892,7 +908,7 @@ public partial class HgGameInstaller
 
                             ForceDeleteFile(targetFilePath);
                             File.Move(tempOutPath, targetFilePath, true);
-                            ReportCompleted(fileNode.Size);
+                            ReportCompleted(fileNode.Size, tempOutPath);
 
                             SharedStatic.InstanceLogger.LogDebug(
                                 $"[HgInstaller] [Patch] {fileNode.Name}");
@@ -1151,7 +1167,8 @@ public partial class HgGameInstaller
             string oldFile,
             string diffFile,
             string outputFile,
-            CancellationToken token)
+            CancellationToken token,
+            Action<long> reportOutput)
         {
             var hpatchzPath = await EnsureHpatchzAsync(
                 targetGameRoot,
@@ -1184,11 +1201,20 @@ public partial class HgGameInstaller
 
             try
             {
-                await process.WaitForExitAsync(token).ConfigureAwait(false);
+                var exit = process.WaitForExitAsync(token);
+                while (await Task.WhenAny(exit, Task.Delay(500, token)).ConfigureAwait(false) != exit)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var output = new FileInfo(outputFile);
+                    if (output.Exists) reportOutput(output.Length);
+                }
+                await exit.ConfigureAwait(false);
+                var finishedOutput = new FileInfo(outputFile);
+                if (process.ExitCode == 0 && finishedOutput.Exists) reportOutput(finishedOutput.Length);
             }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            catch
             {
-                try { process.Kill(entireProcessTree: true); }
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
                 catch (InvalidOperationException) when (process.HasExited) { }
                 await process.WaitForExitAsync().ConfigureAwait(false);
                 throw;
