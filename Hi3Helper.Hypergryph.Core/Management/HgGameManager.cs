@@ -29,6 +29,7 @@ public partial class HgGameManager : GameManagerBase
 
     private volatile HgGetLatestGameRsp? _latestGameInfo;
     private readonly object _refreshGate = new();
+    private string? _boundGamePath;
     private long _normalRefresh;
     private long _fullRefresh;
     private string? _fullResourceBaseUrl;
@@ -132,17 +133,26 @@ public partial class HgGameManager : GameManagerBase
         SharedStatic.InstanceLogger.LogInformation($"[HgCore] SetGamePathInner called! Input path: '{gamePath}'");
         lock (_refreshGate)
         {
-            CurrentGameInstallPath = gamePath;
+            string path = string.IsNullOrEmpty(gamePath) ? string.Empty : Path.TrimEndingDirectorySeparator(Path.GetFullPath(gamePath));
+            CurrentGameInstallPath = path;
+            string localVersion = ReadLocalVersion(path);
+            CurrentGameVersion = GameVersion.TryParse(localVersion, out var version) ? version : GameVersion.Empty;
+
+            if (string.Equals(_boundGamePath, path, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!IsInitialized && !string.IsNullOrEmpty(path)) _ = InitAsyncInner(true);
+                return;
+            }
+
+            _boundGamePath = path;
             ++_normalRefresh;
             ++_fullRefresh;
             _latestGameInfo = null;
             _fullResourceBaseUrl = null;
-            string localVersion = ReadLocalVersion(gamePath);
-            CurrentGameVersion = GameVersion.TryParse(localVersion, out var version) ? version : GameVersion.Empty;
             ApiGameVersion = GameVersion.Empty;
             ApiPreloadGameVersion = GameVersion.Empty;
             IsInitialized = false;
-            if (!string.IsNullOrEmpty(gamePath)) _ = InitAsyncInner(true);
+            if (!string.IsNullOrEmpty(path)) _ = InitAsyncInner(true);
         }
     }
 
