@@ -390,14 +390,20 @@ public partial class HgGameInstaller
                 }
 
                 ResetSingleStageProgress();
+                progress.TotalCountToDownload = 0;
+                progress.TotalStateToComplete = 0;
                 Report(InstallProgressState.Updating);
 
                 beginPhase("patch");
                 await ApplyDeltaPatchAsync(tempExtractDir, installPath, stageDir, package.PatchManifestUrl, token,
-                    (patchedBytes, totalBytes) =>
+                    (patchedBytes, totalBytes, completedFiles, totalFiles) =>
                     {
                         progress.DownloadedBytes = patchedBytes;
                         progress.TotalBytesToDownload = totalBytes;
+                        progress.DownloadedCount = completedFiles;
+                        progress.TotalCountToDownload = totalFiles;
+                        progress.StateCount = completedFiles;
+                        progress.TotalStateToComplete = totalFiles;
                         Report(InstallProgressState.Updating);
                     });
 
@@ -572,7 +578,7 @@ public partial class HgGameInstaller
         }
 
         private async Task ApplyDeltaPatchAsync(string tempExtractDir, string targetGameRoot, string stageRoot,
-            string? patchJsonUrl, CancellationToken token, Action<long, long>? progressCallback = null)
+            string? patchJsonUrl, CancellationToken token, Action<long, long, int, int>? progressCallback = null)
         {
             HgPatchManifest? manifest = null;
             var localPatchJsonPath = Path.Combine(tempExtractDir, "patch.json");
@@ -645,11 +651,13 @@ public partial class HgGameInstaller
                 }
             }
 
-            var totalPatchSize = manifest.Files
+            var patchFiles = manifest.Files
                 .Where(f => !string.IsNullOrEmpty(f.LocalPath) ||
                             (f.Patches != null && f.Patches.Count > 0))
-                .Sum(f => f.Size);
+                .ToArray();
+            var totalPatchSize = patchFiles.Sum(f => f.Size);
             long currentPatchedSize = 0;
+            int completedFiles = 0;
 
             SharedStatic.InstanceLogger.LogInformation("[HgInstaller] Building temporary extraction file map...");
             var extractFileMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -690,7 +698,10 @@ public partial class HgGameInstaller
 
             var progressGate = new object();
             var activeOutputBytes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-            progressCallback?.Invoke(0, totalPatchSize);
+            progressCallback?.Invoke(0, totalPatchSize, 0, patchFiles.Length);
+
+            void PublishProgress() => progressCallback?.Invoke(
+                currentPatchedSize + activeOutputBytes.Values.Sum(), totalPatchSize, completedFiles, patchFiles.Length);
 
             void ReportCompleted(long size, string? output = null)
             {
@@ -698,7 +709,8 @@ public partial class HgGameInstaller
                 {
                     if (output != null) activeOutputBytes.Remove(output);
                     currentPatchedSize += size;
-                    progressCallback?.Invoke(currentPatchedSize + activeOutputBytes.Values.Sum(), totalPatchSize);
+                    completedFiles++;
+                    PublishProgress();
                 }
             }
 
@@ -709,7 +721,7 @@ public partial class HgGameInstaller
                     long observed = Math.Clamp(bytes, 0L, Math.Max(0L, size - 1));
                     if (observed <= activeOutputBytes.GetValueOrDefault(output)) return;
                     activeOutputBytes[output] = observed;
-                    progressCallback?.Invoke(currentPatchedSize + activeOutputBytes.Values.Sum(), totalPatchSize);
+                    PublishProgress();
                 }
             }
 
