@@ -624,19 +624,23 @@ public partial class HgGameInstaller
             var vfsRelativePath = (manifest.VfsBasePath ?? "Hg_Data/StreamingAssets/VFS")
                 .Replace("/", "\\");
 
-            InstallPath.Resolve(targetGameRoot, vfsRelativePath);
-            InstallPath.Resolve(stageRoot, vfsRelativePath);
+            string vfsPrefix = vfsRelativePath.Length == 0 ? string.Empty : vfsRelativePath + "/";
+            if (vfsPrefix.Length != 0)
+            {
+                InstallPath.Resolve(targetGameRoot, vfsRelativePath);
+                InstallPath.Resolve(stageRoot, vfsRelativePath);
+            }
             foreach (var entry in manifest.Files)
             {
                 if (!string.IsNullOrEmpty(entry.Name))
-                    InstallPath.Resolve(stageRoot, vfsRelativePath + "/" + entry.Name);
+                    InstallPath.Resolve(stageRoot, vfsPrefix + entry.Name);
                 if (!string.IsNullOrEmpty(entry.LocalPath))
                     InstallPath.Resolve(tempExtractDir, entry.LocalPath);
                 if (entry.Patches is { Count: > 0 })
                 {
                     var patch = entry.Patches[0];
                     if (!string.IsNullOrEmpty(patch.BaseFile))
-                        InstallPath.Resolve(targetGameRoot, vfsRelativePath + "/" + patch.BaseFile);
+                        InstallPath.Resolve(targetGameRoot, vfsPrefix + patch.BaseFile);
                     if (!string.IsNullOrEmpty(patch.PatchPath))
                         InstallPath.Resolve(tempExtractDir, patch.PatchPath);
                 }
@@ -676,7 +680,7 @@ public partial class HgGameInstaller
 
             void ReserveOutput(string name)
             {
-                if (!outputs.Add(InstallPath.Resolve(stageRoot, vfsRelativePath + "/" + name)))
+                if (!outputs.Add(InstallPath.Resolve(stageRoot, vfsPrefix + name)))
                     throw new InvalidDataException($"Conflicting patch output: {name}");
             }
 
@@ -710,7 +714,7 @@ public partial class HgGameInstaller
                     return;
                 }
 
-                var targetFilePath = InstallPath.Resolve(stageRoot, vfsRelativePath + "/" + fileNode.Name);
+                var targetFilePath = InstallPath.Resolve(stageRoot, vfsPrefix + fileNode.Name);
 
                 var targetDir = Path.GetDirectoryName(targetFilePath)!;
                 if (!Directory.Exists(targetDir))
@@ -771,7 +775,7 @@ public partial class HgGameInstaller
                         return;
                     }
 
-                    var baseFilePath = InstallPath.Resolve(targetGameRoot, vfsRelativePath + "/" + patchInfo.BaseFile);
+                    var baseFilePath = InstallPath.Resolve(targetGameRoot, vfsPrefix + patchInfo.BaseFile);
 
                     var diffFilePath = InstallPath.Resolve(tempExtractDir, patchInfo.PatchPath);
 
@@ -845,7 +849,7 @@ public partial class HgGameInstaller
                     }
                     else
                     {
-                        var tempOutPath = InstallPath.Resolve(stageRoot, vfsRelativePath + "/" + fileNode.Name + ".tmp");
+                        var tempOutPath = InstallPath.Resolve(stageRoot, vfsPrefix + fileNode.Name + ".tmp");
 
                         try
                         {
